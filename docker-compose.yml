@@ -1,0 +1,56 @@
+# Production on a VPS: app + n8n + automatic HTTPS (Caddy).
+#   1. Point two DNS records to the server: ops.example.com and n8n.ops.example.com
+#   2. cp .env.example .env  → fill WhatsApp, PUBLIC_URL=https://ops.example.com, COOKIE_SECURE=true and ALL secrets
+#   3. DOMAIN=ops.example.com docker compose up -d
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      N8N_BASE_URL: ${N8N_BASE_URL:-}
+    volumes:
+      - app_data:/data          # database, photos, backups (copy out: docker compose cp app:/data/backups ./backups)
+    expose: ["3000"]
+
+  n8n:
+    profiles: ["automation"]
+    # Pin an exact version after you have tested your workflows, e.g. docker.n8n.io/n8nio/n8n:<version>
+    image: docker.n8n.io/n8nio/n8n:stable
+    restart: unless-stopped
+    environment:
+      GENERIC_TIMEZONE: Asia/Kolkata
+      TZ: Asia/Kolkata
+      N8N_HOST: n8n.${DOMAIN}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://n8n.${DOMAIN}/
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      NS_BACKEND_URL: http://app:3000
+      NS_AUTOMATION_KEY: ${AUTOMATION_API_KEY}
+      NS_N8N_SECRET: ${N8N_SHARED_SECRET}
+      NS_AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      NS_AI_API_KEY: ${AI_API_KEY}
+      NS_AI_MODEL: ${AI_MODEL}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    expose: ["5678"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+
+volumes:
+  app_data:
+  n8n_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,19 @@
+{
+  "name": "nirmaan-sena-system",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Nirmaan Sena automation: secure WhatsApp workflows, H3 architect dispatch, travel allowances, projects and cost control.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/main.js",
+    "demo": "node --disable-warning=ExperimentalWarning server/main.js --demo",
+    "test": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 \"tests/*.test.js\"",
+    "check": "node --disable-warning=ExperimentalWarning scripts/check-n8n.js"
+  },
+  "dependencies": {
+    "h3-js": "4.5.0"
+  }
+}

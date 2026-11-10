@@ -1,0 +1,167 @@
+{
+  "name": "NS 01 · AI understanding (WhatsApp messages)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## AI understanding\nThe backend calls this webhook when `AI_MODE=n8n`. It sends the customer's message plus a ready-made prompt. This workflow asks your AI model and returns JSON (intent, area, plot size…).\n\n**The AI never writes to customers.** If anything fails, the backend falls back to buttons + keyword rules.\n\nSet in n8n's environment: `NS_AI_BASE_URL` (OpenAI-compatible, e.g. https://api.openai.com/v1), `NS_AI_API_KEY`, `NS_AI_MODEL`, `NS_N8N_SECRET`.\n\nEdit *Build AI request* to add your own instructions.",
+        "height": 300,
+        "width": 520,
+        "color": 4
+      },
+      "id": "0c10c2d2-08d8-5b83-aded-ebeb793904b9",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ns-ai-understand",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "8f2cfff5-3fee-5c4a-9ba2-522002e1a1d0",
+      "name": "Webhook from backend",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        100
+      ],
+      "webhookId": "912c0ced-65dc-594c-b264-b7754ba694b4"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Reject calls that do not carry the shared secret.\nconst req = $input.first().json;\nconst secret = (req.headers || {})['x-ns-secret'];\nif (!secret || secret !== $env.NS_N8N_SECRET) {\n  throw new Error('Unauthorised call to AI workflow');\n}\nconst p = req.body.prompt || {};\n// Add your own rules below (e.g. local area names, product words).\nconst extra = '\\nAlways answer with a single JSON object.';\nreturn [{ json: {\n  model: $env.NS_AI_MODEL || 'gpt-4o-mini',\n  messages: [\n    { role: 'system', content: (p.system || '') + extra },\n    { role: 'user', content: p.user || '' },\n  ],\n  response_format: { type: 'json_object' },\n} }];"
+      },
+      "id": "d1fea877-9065-50dd-9b54-0de5c2508c62",
+      "name": "Check secret & build AI request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.NS_AI_BASE_URL || 'https://api.openai.com/v1') + '/chat/completions' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.NS_AI_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 8000
+        }
+      },
+      "id": "9f289844-460d-55bf-8e50-06a614db6bda",
+      "name": "Ask AI model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        100
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the model's reply into the JSON the backend expects.\nconst r = $input.first().json || {};\nconst text = r.choices?.[0]?.message?.content || (r.content || []).map((c) => c.text || '').join('') || '';\nlet out = { intent: 'other', confidence: 0 };\nconst s = text.indexOf('{'); const e = text.lastIndexOf('}');\nif (s >= 0 && e > s) { try { out = JSON.parse(text.slice(s, e + 1)); } catch (err) { out = { intent: 'other', confidence: 0 }; } }\nreturn [{ json: out }];"
+      },
+      "id": "87300bc9-21f9-56bd-8110-3fc077f4975a",
+      "name": "Parse answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "25ff7130-67c2-52de-8842-8dffa6673d20",
+      "name": "Reply to backend",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1040,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook from backend": {
+      "main": [
+        [
+          {
+            "node": "Check secret & build AI request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check secret & build AI request": {
+      "main": [
+        [
+          {
+            "node": "Ask AI model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask AI model": {
+      "main": [
+        [
+          {
+            "node": "Parse answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse answer": {
+      "main": [
+        [
+          {
+            "node": "Reply to backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "active": false
+}

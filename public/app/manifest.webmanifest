@@ -1,0 +1,12 @@
+{
+  "name": "Nirmaan Sena Team",
+  "short_name": "NS Team",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "background_color": "#f4f5f2",
+  "theme_color": "#c2410c",
+  "icons": [
+    { "src": "/shared/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

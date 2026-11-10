@@ -1,0 +1,113 @@
+{
+  "name": "NS 04 · Error alerts (set as Error Workflow)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Error alerts\nIf any n8n workflow fails, this one tells the owner in the dashboard (bell icon) and, once enabled, by email.\n\n**Setup:** open each NS workflow → *Settings* → *Error workflow* → choose this workflow.",
+        "height": 220,
+        "width": 480,
+        "color": 4
+      },
+      "id": "1e9ef2b9-0261-59a7-bab9-b08b3af3ec22",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "7e0bebdb-1fe4-546f-ae99-b200bb3cfdc1",
+      "name": "When a workflow fails",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NS_BACKEND_URL }}/api/automation/alerts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Automation-Key",
+              "value": "={{ $env.NS_AUTOMATION_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: 'n8n workflow failed: ' + ($json.workflow?.name || 'unknown'), body: ($json.execution?.error?.message || 'No message') + ' (execution ' + ($json.execution?.id || '?') + ')', level: 'error' }) }}"
+      },
+      "id": "98bd0123-2eba-5128-9537-1cf820559674",
+      "name": "Alert in dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "fromEmail": "automation@nirmaansena.com",
+        "toEmail": "contact@nirmaansena.com",
+        "subject": "={{ 'n8n failed: ' + ($json.workflow?.name || '') }}",
+        "emailFormat": "text",
+        "text": "={{ $json.execution?.error?.message || '' }}",
+        "options": {}
+      },
+      "id": "3cd4993f-a381-5f28-b5d3-ec8581554ea7",
+      "name": "Email the owner (add SMTP, then enable)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        280,
+        200
+      ],
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "When a workflow fails": {
+      "main": [
+        [
+          {
+            "node": "Alert in dashboard",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email the owner (add SMTP, then enable)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "active": false
+}

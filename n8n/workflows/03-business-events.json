@@ -1,0 +1,198 @@
+{
+  "name": "NS 03 · Business events (email / Sheets / CRM)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Business events\nThe backend posts every important event here (new enquiry, visit confirmed, project created, payment recorded, invoice issued, ticket, morning brief, payroll summary). The webhook responds only after all enabled steps finish. Failures return an error so the backend retries. Every event includes a stable eventId and Idempotency-Key: connected systems must deduplicate before applying effects. A timeout after partial success can replay earlier steps. Email delivery is not exactly-once.\n\nAdd your own steps after **Format event**: email the owner, append a row to Google Sheets, post to Slack/Telegram, or call your CRM. Two disabled examples are included — add credentials, then enable them.",
+        "height": 280,
+        "width": 560,
+        "color": 4
+      },
+      "id": "ae255307-38a3-5210-a93b-2b687f983797",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -340
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ns-events",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "fc4eca39-4eab-5d8d-9373-8496c0ca7310",
+      "name": "Webhook: events from backend",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        100
+      ],
+      "webhookId": "84825bde-46f7-584f-b95e-95597a62d409"
+    },
+    {
+      "parameters": {
+        "jsCode": "const req = $input.first().json;\nif (!(req.headers || {})['x-ns-secret'] || (req.headers || {})['x-ns-secret'] !== $env.NS_N8N_SECRET) throw new Error('Unauthorised event');\nconst ev = req.body || {};\nconst d = ev.data || {};\nconst titles = {\n  'lead.submitted': `New enquiry ${d.ref} (${(d.services || []).join(', ')}) — ${d.zone || ''}`,\n  'visit.confirmed': `Site visit ${d.ref} confirmed: ${d.architect} at ${d.start}`,\n  'visit.report_submitted': `Site report ${d.ref} submitted for ${d.leadRef}`,\n  'quotation.sent': `Quotation ${d.ref} v${d.version} sent (₹${d.total})`,\n  'project.created': `🎉 New project ${d.ref} for ${d.client} (₹${d.value})`,\n  'payment.recorded': `Payment ₹${d.amount} received for ${d.project}`,\n  'invoice.issued': `Invoice ${d.ref} issued for ${d.project}: ₹${d.amount}`,\n  'milestone.accepted': `Stage “${d.milestone}” accepted on ${d.project}`,\n  'ticket.created': `Client ticket ${d.ref} (${d.category})`,\n  'brief.morning': `Morning brief: ${d.newLeads} new leads, ${d.visitsToday} visits today, ${d.pendingApprovals} approvals waiting`,\n  'payroll.summary': `Payroll summary ready for ${d.month}`,\n};\nconst important = ['lead.submitted', 'project.created', 'payment.recorded', 'ticket.created', 'brief.morning', 'payroll.summary'].includes(ev.type);\nreturn [{ json: { eventId: ev.eventId || (req.headers || {})['idempotency-key'], type: ev.type, at: ev.at, title: titles[ev.type] || ev.type, important, data: d } }];"
+      },
+      "id": "68d1f0a0-8575-527b-98ad-e12e52530e99",
+      "name": "Format event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c44e4ac9-4674-53d8-9d65-a518ceab5f00",
+              "leftValue": "={{ $json.important }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "79d51401-17b0-5b7e-ada8-24af832925dd",
+      "name": "Important?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "automation@nirmaansena.com",
+        "toEmail": "contact@nirmaansena.com",
+        "subject": "={{ $json.title }}",
+        "emailFormat": "text",
+        "text": "={{ $json.title }}\n\n{{ JSON.stringify($json.data, null, 2) }}",
+        "options": {}
+      },
+      "id": "0b373d9c-0e7a-56a7-971e-30d69dfbdc82",
+      "name": "Email the owner (add SMTP, then enable)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        800,
+        0
+      ],
+      "disabled": true,
+      "notesInFlow": true,
+      "notes": "Create an SMTP credential (e.g. Gmail app password), select it here and enable the node."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://script.google.com/macros/s/YOUR-APPS-SCRIPT-ID/exec",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ eventId: $json.eventId, type: $json.type, at: $json.at, title: $json.title, data: $json.data }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "19739167-4a7e-5ae5-b66e-0fab54452d24",
+      "name": "Send to your sheet / CRM (enable)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        200
+      ],
+      "disabled": true,
+      "notesInFlow": true,
+      "notes": "Example: a Google Apps Script web app that appends rows to a Google Sheet. Replace the URL, then enable."
+    },
+    {
+      "parameters": {},
+      "id": "b682e0f8-bcbc-5d43-8fd2-18423b4655a8",
+      "name": "Other events (no action)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        800,
+        360
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: events from backend": {
+      "main": [
+        [
+          {
+            "node": "Format event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format event": {
+      "main": [
+        [
+          {
+            "node": "Important?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Important?": {
+      "main": [
+        [
+          {
+            "node": "Email the owner (add SMTP, then enable)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send to your sheet / CRM (enable)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Other events (no action)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "active": false
+}

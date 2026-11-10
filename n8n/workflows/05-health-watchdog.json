@@ -1,0 +1,209 @@
+{
+  "name": "NS 05 · Health watchdog (every 15 min)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Health watchdog\nEvery 15 minutes n8n checks the backend: outgoing WhatsApp queue, stuck incoming messages, timers, scheduler and failed routines. The backend also shows when n8n was last seen — each watches the other.\n\nIf the backend is **down**, the dashboard cannot show alerts, so enable the email node (or add Telegram/SMS).",
+        "height": 240,
+        "width": 520,
+        "color": 4
+      },
+      "id": "22578389-37cf-5dcb-b8a7-4a990fefd573",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "2075b336-3a19-55bd-a7ed-a8c4bf4b2f3c",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.NS_BACKEND_URL }}/api/automation/health",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Automation-Key",
+              "value": "={{ $env.NS_AUTOMATION_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "449d4fd0-86fc-5561-aaa7-e3ee4e012a1d",
+      "name": "Check backend health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        100
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json || {};\nif (r.error || r.ok === undefined) {\n  return [{ json: { problem: true, down: true, message: 'Backend not reachable: ' + (r.error?.message || r.message || 'no response') } }];\n}\nreturn [{ json: { problem: !r.ok, down: false, message: (r.warnings || []).join('; ') } }];"
+      },
+      "id": "1f92c3c6-0667-5ec5-aab3-2f7fc1237859",
+      "name": "Evaluate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "512a583d-3a7d-58cf-b3f0-7f740c873986",
+              "leftValue": "={{ $json.problem }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9910edff-8ffc-5470-8479-2655f7f1c33c",
+      "name": "Problem?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "automation@nirmaansena.com",
+        "toEmail": "contact@nirmaansena.com",
+        "subject": "={{ $json.down ? '🚨 Nirmaan Sena system is DOWN' : '⚠ Nirmaan Sena system needs attention' }}",
+        "emailFormat": "text",
+        "text": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "4c15e9e7-2afe-5b79-b585-de174877d749",
+      "name": "Email the owner (add SMTP, then enable)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        980,
+        0
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {},
+      "id": "346313ec-fae0-5242-b0a9-4f04679a3e8b",
+      "name": "All good",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        980,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Check backend health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check backend health": {
+      "main": [
+        [
+          {
+            "node": "Evaluate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate": {
+      "main": [
+        [
+          {
+            "node": "Problem?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Problem?": {
+      "main": [
+        [
+          {
+            "node": "Email the owner (add SMTP, then enable)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "All good",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "active": false
+}

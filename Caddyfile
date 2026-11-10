@@ -1,0 +1,9 @@
+# Automatic HTTPS certificates for the dashboard/webhook and for n8n.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:3000
+}
+
+n8n.{$DOMAIN} {
+	reverse_proxy n8n:5678
+}
