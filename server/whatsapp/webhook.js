@@ -7,7 +7,7 @@ import { config } from '../config.js';
 import { setState } from '../core/base.js';
 
 export function verifySubscription(query) {
-  if (query['hub.mode'] === 'subscribe' && query['hub.verify_token'] && query['hub.verify_token'] === config.whatsapp.verifyToken) return query['hub.challenge'];
+  if (query['hub.mode'] === 'subscribe' && query['hub.verify_token'] && config.whatsapp.verifyToken && safeEqual(String(query['hub.verify_token']), config.whatsapp.verifyToken)) return query['hub.challenge'];
   return null;
 }
 
@@ -20,8 +20,10 @@ export function verifySubscription(query) {
 export function verifySignature(rawBody, headers = {}, query = {}) {
   const w = config.whatsapp;
   if (!w.appSecret) {
-    if (w.provider === 'simulator') return true;
-    if (w.provider === 'dialog360') {
+    // The simulator injects messages inside the server and never needs this URL. If the
+    // URL is reachable from outside (tunnel/server), posting to it still needs the key,
+    // otherwise anyone could impersonate any client or employee.
+    if (w.provider === 'dialog360' || w.provider === 'simulator') {
       const key = headers['x-ns-webhook-key'] || query.key;
       return !!key && !!w.verifyToken && safeEqual(key, w.verifyToken);
     }

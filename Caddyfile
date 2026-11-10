@@ -1,9 +1,7 @@
-# Automatic HTTPS certificates for the dashboard/webhook and for n8n.
+# Automatic HTTPS certificates for the dashboard, employee app and WhatsApp webhook.
+# n8n is deliberately NOT published here: the app reaches it on the internal Docker
+# network, and you open its editor through an SSH tunnel (docs/GO-LIVE.md §5).
 {$DOMAIN} {
 	encode gzip
 	reverse_proxy app:3000
-}
-
-n8n.{$DOMAIN} {
-	reverse_proxy n8n:5678
 }

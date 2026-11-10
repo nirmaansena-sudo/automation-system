@@ -16,7 +16,7 @@ import { verifySubscription, verifySignature, ingest, ingestWebsiteForm, fakeWeb
 import { kickInbound, drain } from '../core/workers.js';
 import { quotePage, projectPage, visitPage } from '../pages/public-pages.js';
 import { seedDemo } from '../seed/seed.js';
-import { publicUser } from '../domain/staff.js';
+import { publicUser, selfUser } from '../domain/staff.js';
 import { ensureContact } from '../domain/common.js';
 import { renderTemplateBody } from '../whatsapp/format.js';
 
@@ -35,7 +35,10 @@ function assignedProject(userId, projectId) {
 }
 export function canReadMedia(user, media) {
   if (!user) return false;
-  if (DASHBOARD_ROLES.includes(user.role)) return true;
+  if (user.role === 'owner' || user.role === 'manager') return true;
+  // Finance needs bills and project documents, not client chat photos, staff
+  // messages or attendance selfies.
+  if (user.role === 'finance' && ['expense', 'project', 'site_log'].includes(media.owner_type)) return true;
   const id = user.id;
   if (media.owner_type === 'project') return assignedProject(id, media.owner_id);
   if (media.owner_type === 'site_log') {
@@ -59,7 +62,7 @@ export function registerPublic(r) {
     const needsSetup = !one('SELECT 1 FROM users LIMIT 1');
     return { needsSetup, needsCode: needsSetup && setupCodeRequired(), provider: config.whatsapp.provider };
   });
-  r.post('/api/setup', { auth: 'none' }, (ctx) => tx(() => {
+  r.post('/api/setup', { auth: 'none', limit: 16 * 1024 }, (ctx) => tx(() => {
     if (one('SELECT 1 FROM users LIMIT 1')) throw forbidden('Setup is already complete');
     const b = ctx.body || {};
     if (setupCodeRequired()) {
@@ -73,7 +76,7 @@ export function registerPublic(r) {
     validatePassword(b.password);
     const phone = b.phone ? normPhone(b.phone) : null;
     if (b.phone && (!phone || !/^\d{11,15}$/.test(phone))) throw bad('Enter a valid phone number');
-    const id = insert('users', { name: b.name, email: String(b.email).toLowerCase().trim(), phone, role: 'owner', title: 'Owner', password_hash: hashSecret(b.password), pin_hash: hashSecret(b.password), zones: '[]', skills: '[]', weekly_off: '[0]', active: 1, created_at: nowIso(), updated_at: nowIso() });
+    const id = insert('users', { name: b.name, email: String(b.email).toLowerCase().trim(), phone, role: 'owner', title: 'Owner', password_hash: hashSecret(b.password), pin_hash: null, zones: '[]', skills: '[]', weekly_off: '[0]', active: 1, created_at: nowIso(), updated_at: nowIso() });
     if (phone) ensureContact(phone, { userId: id, name: b.name });
     audit(`user:${id}`, 'setup.owner_created', 'user', id);
     let demo = null;
@@ -81,16 +84,20 @@ export function registerPublic(r) {
     createSession(id, 'dashboard', ctx);
     return { ok: true, demo };
   }));
-  r.post('/api/auth/login', { auth: 'none' }, (ctx) => { const u = loginDashboard(ctx, ctx.body?.login, ctx.body?.password, ctx.body?.mfa_code); audit(`user:${u.id}`, 'auth.login', 'user', u.id); return { user: publicUser(u) }; });
-  r.post('/api/auth/app-login', { auth: 'none' }, (ctx) => { const { user, token } = loginApp(ctx, ctx.body?.phone, ctx.body?.pin, ctx.body?.mfa_code); audit(`user:${user.id}`, 'auth.app_login', 'user', user.id); return { user: publicUser(user), token }; });
-  r.post('/api/auth/logout', { auth: 'none' }, (ctx) => { logout(ctx); return { ok: true }; });
-  r.get('/api/me', { auth: 'any' }, (ctx) => ({ user: publicUser(ctx.user), dashboard: DASHBOARD_ROLES.includes(ctx.user.role), provider: config.whatsapp.provider, publicUrl: config.publicUrl }));
+  r.post('/api/auth/login', { auth: 'none', limit: 16 * 1024 }, (ctx) => { const u = loginDashboard(ctx, ctx.body?.login, ctx.body?.password, ctx.body?.mfa_code); audit(`user:${u.id}`, 'auth.login', 'user', u.id); return { user: selfUser(u) }; });
+  r.post('/api/auth/app-login', { auth: 'none', limit: 16 * 1024 }, (ctx) => { const { user, token } = loginApp(ctx, ctx.body?.phone, ctx.body?.pin, ctx.body?.mfa_code); audit(`user:${user.id}`, 'auth.app_login', 'user', user.id); return { user: selfUser(user), token }; });
+  r.post('/api/auth/logout', { auth: 'none', limit: 16 * 1024 }, (ctx) => {
+    // Same cross-site check as other state changes (our pages always send it).
+    if (ctx.req.headers['x-ns'] !== '1' && !/^Bearer /.test(ctx.req.headers.authorization || '')) throw new HttpError(403, 'Missing request header');
+    logout(ctx); return { ok: true };
+  });
+  r.get('/api/me', { auth: 'any' }, (ctx) => ({ user: selfUser(ctx.user), dashboard: DASHBOARD_ROLES.includes(ctx.user.role), provider: config.whatsapp.provider, publicUrl: config.publicUrl }));
   r.post('/api/me/password', { auth: 'any' }, (ctx) => tx(() => {
     const b = ctx.body || {};
     const hasPassword = Object.hasOwn(b, 'password'); const hasPin = Object.hasOwn(b, 'pin');
     if (!hasPassword && !hasPin) throw bad('Enter a new password or PIN');
     if (hasPassword) validatePassword(b.password);
-    if (hasPin && (typeof b.pin !== 'string' || !/^\d{4,8}$/.test(b.pin))) throw bad('PIN must be 4–8 digits');
+    if (hasPin && (typeof b.pin !== 'string' || !/^\d{6,8}$/.test(b.pin))) throw bad('PIN must be 6–8 digits');
     reauthenticate(ctx, b, { allowPin: !hasPassword });
     if (hasPin) run('UPDATE users SET pin_hash=? WHERE id=?', hashSecret(b.pin), ctx.user.id);
     if (hasPassword) run('UPDATE users SET password_hash=? WHERE id=?', hashSecret(b.password), ctx.user.id);
@@ -134,8 +141,9 @@ export function registerPublic(r) {
   });
 
   // ---------------- website enquiry form (already OTP-verified on nirmaansena.com)
-  r.post('/api/public/website-enquiry', { auth: 'none' }, (ctx) => {
-    const secret = ctx.req.headers['x-website-secret'] || ctx.query.secret;
+  r.post('/api/public/website-enquiry', { auth: 'none', limit: 64 * 1024 }, (ctx) => {
+    // Header only: a secret in the URL ends up in proxy and browser logs.
+    const secret = ctx.req.headers['x-website-secret'];
     if (!secret || !safeEqual(secret, config.websiteSecret)) throw new HttpError(401, 'Bad secret');
     const b = ctx.body || {};
     if (!b.mobile && !b.whatsapp) throw bad('mobile or whatsapp is required');

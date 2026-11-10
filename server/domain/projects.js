@@ -86,7 +86,8 @@ export function recordPayment(invoiceId, { amount, method = 'bank', reference = 
   const normalized = String(reference || '').trim().toUpperCase() || null;
   if ((key && key.length > 128) || (normalized && normalized.length > 150)) return { error: 'Payment reference or request key is too long' };
   if (!key && !normalized) return { error: 'Provide a transaction reference or a unique request key' };
-  const previous = one('SELECT * FROM payments WHERE (client_event_id=? AND ? IS NOT NULL) OR (invoice_id=? AND method=? AND (normalized_reference=? OR UPPER(TRIM(reference))=?) AND ? IS NOT NULL) LIMIT 1', key, key, inv.id, method, normalized, normalized, normalized);
+  // A transaction reference (UTR, cheque no.) counts once per project, whatever method it is recorded under.
+  const previous = one('SELECT * FROM payments WHERE (client_event_id=? AND ? IS NOT NULL) OR (project_id=? AND (normalized_reference=? OR UPPER(TRIM(reference))=?) AND ? IS NOT NULL) LIMIT 1', key, key, inv.project_id, normalized, normalized, normalized);
   if (previous) return previous.invoice_id === inv.id && paise(previous.amount) === cents && previous.method === method && (String(previous.reference || '').trim().toUpperCase() || null) === normalized
     ? { ok: true, duplicate: true, id: previous.id, fullyPaid: inv.status === 'paid' }
     : { error: 'This payment key or reference has already been used with different details' };
@@ -232,19 +233,31 @@ export function decideHandover(approvalId, { decision, note }, actor) {
 }
 
 /** Daily site log from the supervisor app (idempotent per client_event_id). */
+const isDay = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T00:00:00Z`)) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
 export function addSiteLog(projectId, userId, data) {
   if (data.client_event_id) {
-    const ex = one('SELECT id FROM site_logs WHERE client_event_id=?', data.client_event_id);
+    if (typeof data.client_event_id !== 'string' || data.client_event_id.length > 128) return { error: 'Invalid event ID' };
+    // Scoped to the author: another person's id must not swallow this log.
+    const ex = one('SELECT id, user_id FROM site_logs WHERE client_event_id=?', data.client_event_id);
+    if (ex && ex.user_id !== userId) return { error: 'Event ID belongs to another account' };
     if (ex) return { ok: true, id: ex.id, duplicate: true };
   }
   const p = getProject(projectId);
   if (!p) return { error: 'Project not found' };
+  if (['closed', 'cancelled'].includes(p.status)) return { error: 'This project is closed' };
+  // Everything below can reach the client's project page, so validate it.
+  const logDate = data.log_date ?? istDate(data.device_time && Number.isFinite(Date.parse(data.device_time)) ? new Date(data.device_time) : undefined);
+  if (!isDay(logDate) || logDate > istDate() || logDate < addDays(istDate(), -7)) return { error: 'The log date must be within the last 7 days' };
+  if (data.milestone_id !== undefined && data.milestone_id !== null && data.milestone_id !== '' && !one('SELECT 1 FROM milestones WHERE id=? AND project_id=?', Number(data.milestone_id), p.id)) return { error: 'That stage is not part of this project' };
+  if (data.progress !== undefined && data.progress !== null && data.progress !== '' && (!Number.isInteger(Number(data.progress)) || Number(data.progress) < 0 || Number(data.progress) > 100)) return { error: 'Progress must be a whole number from 0 to 100' };
+  const labour = data.labour && typeof data.labour === 'object' && !Array.isArray(data.labour)
+    ? Object.fromEntries(Object.entries(data.labour).slice(0, 20).filter(([, v]) => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 1000).map(([k, v]) => [String(k).slice(0, 40), Number(v)])) : {};
   const at = nowIso();
   const dist = haversineM(data.lat, data.lng, p.site_lat, p.site_lng);
   const id = insert('site_logs', {
-    project_id: p.id, user_id: userId, log_date: data.log_date || istDate(data.device_time ? new Date(data.device_time) : undefined),
-    work_done: truncate(data.work_done || '', 2000), labour: JSON.stringify(data.labour || {}), materials: data.materials || null, issues: data.issues || null,
-    milestone_id: data.milestone_id || null, progress: data.progress ?? null, lat: data.lat ?? null, lng: data.lng ?? null, distance_m: dist,
+    project_id: p.id, user_id: userId, log_date: logDate,
+    work_done: truncate(String(data.work_done || ''), 2000), labour: JSON.stringify(labour), materials: data.materials ? truncate(String(data.materials), 2000) : null, issues: data.issues ? truncate(String(data.issues), 2000) : null,
+    milestone_id: data.milestone_id ? Number(data.milestone_id) : null, progress: data.progress === undefined || data.progress === null || data.progress === '' ? null : Number(data.progress), lat: data.lat ?? null, lng: data.lng ?? null, distance_m: dist,
     client_visible: data.client_visible === false ? 0 : 1, client_event_id: data.client_event_id || null, device_time: data.device_time || null, created_at: at,
   });
   if (data.milestone_id && data.progress !== undefined && data.progress !== null) {

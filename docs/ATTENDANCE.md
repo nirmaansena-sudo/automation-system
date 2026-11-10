@@ -14,4 +14,8 @@ The missing-check-in routine checks hourly at **:15 IST**. It considers all acti
 
 The included n8n workflow uses the same hourly trigger. Existing n8n installations must import/update and publish the revised workflow; exporting this source does not publish a live workflow. The backend's configured fallback remains available if a scheduled n8n run is missed. The server must be running to check attendance. In-app notifications work locally; WhatsApp reminders need a configured live provider and any required approved templates. The preview uses the simulator.
 
+**Since 1.2.1:** a check-in sent live always uses the server's clock. Items queued offline keep the phone's
+time, but anything older than the time-skew limit (Settings → attendance, default 10 minutes) goes to manager
+review as "time taken from the phone (sent later)". A check-in without a GPS accuracy value counts as weak GPS.
+
 The existing evening check remains at 21:00. Overnight shifts are not supported by the calendar-day attendance model; configure normal daytime shifts or review exceptions manually. An offline punch appears on the manager dashboard only after synchronization. HTTPS and browser location permission are required for real phone location use.

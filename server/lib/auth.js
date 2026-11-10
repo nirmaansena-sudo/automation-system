@@ -1,6 +1,6 @@
 // Sessions for the dashboard (cookie) and the employee app (cookie or Bearer).
 import { one, run, insert } from '../db/index.js';
-import { randomToken, sha256, checkSecret, normPhone } from './util.js';
+import { randomToken, sha256, checkSecret, normPhone, hashSecret } from './util.js';
 
 // Sessions use real wall-clock time (not the simulator's fast-forward clock).
 const realNow = () => new Date().toISOString();
@@ -29,12 +29,18 @@ function failed(key, limit = 6) {
   attempts.set(key, a);
 }
 
+// Unknown accounts are checked against a throwaway hash, so a login for a phone or
+// email that does not exist takes as long as a wrong password for one that does.
+let dummyHash = null;
+const dummy = () => (dummyHash ||= hashSecret(randomToken(16)));
+
 function credentials(ctx, kind, identifier, verify, user, mfaCode) {
   const accountKey = `${kind}:account:${user ? `id:${user.id}` : identifier}`;
   const ipKey = `${kind}:ip:${ctx.ip}`;
   throttle(accountKey); throttle(ipKey);
   try {
-    if (!user || !verify()) throw new HttpError(401, kind === 'app' ? 'Wrong phone number or PIN' : 'Wrong email/phone or password');
+    const ok = verify(); // always runs the full password hash, even for unknown accounts
+    if (!user || !ok) throw new HttpError(401, kind === 'app' ? 'Wrong phone number or PIN' : 'Wrong email/phone or password');
     verifyMfa(user.id, mfaCode);
   } catch (e) {
     // Requesting the second factor is not a failed code attempt.
@@ -75,7 +81,7 @@ export function loginDashboard(ctx, login, password, mfaCode) {
   if (typeof login !== 'string' || login.length > 254 || typeof password !== 'string' || password.length > 128) throw new HttpError(400, 'Invalid login details');
   const l = login.trim().toLowerCase();
   const u = one('SELECT * FROM users WHERE active=1 AND (email=? OR phone=?)', l, normPhone(l) || '-');
-  credentials(ctx, 'dashboard', l, () => checkSecret(password, u.password_hash), u, mfaCode);
+  credentials(ctx, 'dashboard', l, () => checkSecret(password, u?.password_hash || dummy()), u, mfaCode);
   if (!DASHBOARD_ROLES.includes(u.role)) throw forbidden('This account uses the employee app. Open /app/ on your phone.');
   createSession(u.id, 'dashboard', ctx);
   return u;
@@ -85,7 +91,7 @@ export function loginApp(ctx, phone, pin, mfaCode) {
   if (typeof phone !== 'string' || phone.length > 32 || typeof pin !== 'string' || pin.length > 128) throw new HttpError(400, 'Invalid login details');
   const p = normPhone(phone);
   const u = one('SELECT * FROM users WHERE active=1 AND phone=?', p);
-  credentials(ctx, 'app', p || '', () => checkSecret(pin, u.pin_hash), u, mfaCode);
+  credentials(ctx, 'app', p || '', () => checkSecret(pin, u?.pin_hash || dummy()), u, mfaCode);
   const token = createSession(u.id, 'app', ctx);
   return { user: u, token };
 }
@@ -113,6 +119,7 @@ export function sessionUser(ctx, kind = 'any') {
     if (kind === 'dashboard' && s.kind !== 'dashboard') continue;
     if (kind === 'app' && s.kind !== 'app') continue;
     if (Date.now() - Date.parse(s.last_seen_at || 0) > 5 * 60e3) run('UPDATE sessions SET last_seen_at=?, expires_at=? WHERE id=?', realNow(), realPlus(TTL[s.kind]), s.id);
+    ctx.sessionKind = s.kind;
     return one('SELECT * FROM users WHERE id=?', s.user_id);
   }
   return null;

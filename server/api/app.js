@@ -1,23 +1,31 @@
 // Employee / architect / supervisor app API (phone + PIN login, works offline-first).
 import { all, one, run, tx } from '../db/index.js';
 import { nowIso, addMinIso, jparse, istDate, addDays, fromIst, prettyPhone, mapsLink } from '../lib/util.js';
-import { bad, notFound, forbidden } from '../lib/http.js';
+import { bad, notFound, forbidden, HttpError } from '../lib/http.js';
 import { saveMediaBuffer } from '../whatsapp/providers.js';
 import { insert } from '../db/index.js';
 import { getSettings } from '../core/base.js';
-import { publicUser, recordAttendance, requestLeave, submitExpense, updateTask, allowedPlaces } from '../domain/staff.js';
+import { publicUser, selfUser, recordAttendance, requestLeave, submitExpense, updateTask, allowedPlaces } from '../domain/staff.js';
 import { architectRespond, pendingOffersFor } from '../domain/scheduling.js';
 import { getVisit, visitCheckin, markClientNoShow, submitVisitReport, visitsForArchitect } from '../domain/visits.js';
 import { getProject, addSiteLog, submitMilestone } from '../domain/projects.js';
 import { getLead } from '../domain/leads.js';
 import { servicesText, natureText, areaText, leadPlace } from '../domain/common.js';
 
+const DAILY_UPLOAD_BYTES = 300 * 1024 * 1024;
+/** True when this employee already sent this queued item (skip saving its photo again). */
+function attendanceDuplicate(userId, clientEventId) {
+  return typeof clientEventId === 'string' && !!one('SELECT 1 FROM attendance_events WHERE client_event_id=? AND user_id=?', clientEventId, userId);
+}
 export function saveUpload(b, owner, by) {
   if (!b?.data) return null;
   const mime = String(b.mime || 'image/jpeg');
   if (!/^(image\/(jpeg|png|webp)|application\/pdf)$/.test(mime)) throw bad('Only JPG, PNG, WEBP images or PDF are allowed');
   const buf = Buffer.from(String(b.data).replace(/^data:[^,]+,/, ''), 'base64');
   if (buf.length > 8 * 1024 * 1024) throw bad('File too large (max 8 MB)');
+  // Per-person daily limit, so one phone (or a stolen login) cannot fill the disk.
+  const today = one('SELECT COALESCE(SUM(size),0) n FROM media WHERE uploaded_by=? AND created_at>=?', by, new Date(Date.now() - 86400000).toISOString()).n;
+  if (today + buf.length > DAILY_UPLOAD_BYTES) throw new HttpError(429, 'Daily upload limit reached (300 MB). Try again tomorrow or ask your manager.');
   const saved = saveMediaBuffer(buf, mime);
   return insert('media', { mime, file_path: saved.filePath, size: saved.size, sha256: saved.sha256, caption: b.caption || null, owner_type: owner[0], owner_id: owner[1], uploaded_by: by, lat: b.lat ?? null, lng: b.lng ?? null, status: 'stored', created_at: nowIso() });
 }
@@ -34,7 +42,7 @@ export function registerApp(r) {
     const events = all('SELECT * FROM attendance_events WHERE user_id=? AND effective_time>=? AND effective_time<? ORDER BY effective_time', u.id, from, to);
     const last = events[events.length - 1];
     return {
-      user: publicUser(u), day, checkedIn: last?.kind === 'in', events: events.map((e) => ({ kind: e.kind, at: e.effective_time, place: e.place_name, validation: e.validation, reasons: jparse(e.reasons, []) })),
+      user: selfUser(u), day, checkedIn: last?.kind === 'in', events: events.map((e) => ({ kind: e.kind, at: e.effective_time, place: e.place_name, validation: e.validation, reasons: jparse(e.reasons, []) })),
       places: allowedPlaces(u, day).map((p) => ({ type: p.type, id: p.id, name: p.name })),
       tasks: all("SELECT * FROM tasks WHERE assignee_id=? AND status NOT IN ('done','cancelled') ORDER BY CASE priority WHEN 'high' THEN 0 ELSE 1 END, COALESCE(due_at,'9999') LIMIT 50", u.id),
       offers: pendingOffersFor(u.id).map((o) => ({ id: o.id, revision: o.revision, ref: o.ref, slot_start: o.slot_start, expires_at: o.expires_at, place: leadPlace(o), services: servicesText(o.services), nature: natureText(o), area: areaText(o) })),
@@ -48,8 +56,10 @@ export function registerApp(r) {
   r.post('/api/app/attendance', { auth: 'app', limit: 12 * 1024 * 1024 }, (ctx) => tx(() => {
     const b = ctx.body || {};
     if (b.owner_user_id !== undefined && Number(b.owner_user_id) !== ctx.user.id) throw forbidden('Saved item belongs to a different employee');
-    const photo = b.photo ? saveUpload({ ...b.photo, lat: b.lat, lng: b.lng }, ['attendance', ctx.user.id], `user:${ctx.user.id}`) : null;
-    const res = recordAttendance(ctx.user.id, { ...b, photo_media_id: photo });
+    if (!['in', 'out'].includes(b.kind)) throw bad('kind must be in or out');
+    const dup = attendanceDuplicate(ctx.user.id, b.client_event_id);
+    const photo = b.photo && !dup ? saveUpload({ ...b.photo, lat: b.lat, lng: b.lng }, ['attendance', ctx.user.id], `user:${ctx.user.id}`) : null;
+    const res = recordAttendance(ctx.user.id, { ...b, offline: false, live: true, photo_media_id: photo });
     if (res.error) throw bad(res.error);
     return res;
   }));
@@ -62,7 +72,9 @@ export function registerApp(r) {
         return tx(() => {
           if (it.owner_user_id !== undefined && Number(it.owner_user_id) !== ctx.user.id) throw forbidden('Saved item belongs to a different employee');
           if (it.type === 'attendance') {
-            const photo = it.photo ? saveUpload({ ...it.photo, lat: it.lat, lng: it.lng }, ['attendance', ctx.user.id], `user:${ctx.user.id}`) : null;
+            if (!['in', 'out'].includes(it.kind)) return { client_event_id: it.client_event_id, error: 'kind must be in or out' };
+            const dup = attendanceDuplicate(ctx.user.id, it.client_event_id);
+            const photo = it.photo && !dup ? saveUpload({ ...it.photo, lat: it.lat, lng: it.lng }, ['attendance', ctx.user.id], `user:${ctx.user.id}`) : null;
             return { client_event_id: it.client_event_id, ...recordAttendance(ctx.user.id, { ...it, offline: true, photo_media_id: photo }) };
           }
           if (it.type === 'site_log') return { client_event_id: it.client_event_id, ...siteLog(ctx.user, it) };

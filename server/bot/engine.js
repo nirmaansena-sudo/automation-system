@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import { audit, notify, createTask, setting, isBusinessHours, businessHoursText, setState } from '../core/base.js';
 import { enqueueWhatsApp, applyStatus, touchConversation, registerGuard } from '../core/outbox.js';
 import { schedule, cancelTimers, registerTimer } from '../core/timers.js';
-import { getProvider, saveMediaBuffer } from '../whatsapp/providers.js';
+import { getProvider, saveMediaBuffer, MAX_INBOUND_MEDIA } from '../whatsapp/providers.js';
 import { t } from './i18n.js';
 import { SERVICES, NATURES, WINDOWS, ZONES_DEFAULT } from './catalog.js';
 import { detectIntents, extractServices, extractNature, extractWindow, extractZone, looksOutsideJaipur, parseArea, cleanName, matchFaq, extractProjectRef, norm } from './nlu.js';
@@ -91,7 +91,7 @@ function recordInbound(m) {
 async function saveInboundMedia(m, rec) {
   let buffer = null; let mime = m.media.mime || 'application/octet-stream';
   try {
-    if (m.media.simData) buffer = Buffer.from(m.media.simData, 'base64');
+    if (m.media.simData) { if (m.media.simData.length > MAX_INBOUND_MEDIA * 1.4) throw new Error('Media too large to store'); buffer = Buffer.from(m.media.simData, 'base64'); }
     else if (m.media.id) { const r = await getProvider().downloadMedia(m.media.id); buffer = r.buffer; mime = r.mime || mime; }
   } catch (e) { console.error('media download failed', e.message); }
   tx(() => {
@@ -101,7 +101,7 @@ async function saveInboundMedia(m, rec) {
     // explicitly confirmed. A staff contact can also be a former client.
     const owner = rec.staff ? ['staff_message', rec.msgId] : lead ? ['lead', lead.id] : proj ? ['project', proj.id] : ['contact', rec.contact.id];
     let saved = null;
-    if (buffer && (!rec.staff || buffer.length <= 8 * 1024 * 1024)) saved = saveMediaBuffer(buffer, mime);
+    if (buffer && buffer.length <= (rec.staff ? 8 * 1024 * 1024 : MAX_INBOUND_MEDIA)) saved = saveMediaBuffer(buffer, mime);
     const mediaId = insert('media', { provider_media_id: m.media.id || null, mime, file_path: saved?.filePath || null, size: saved?.size || null, sha256: saved?.sha256 || null, caption: m.media.caption || null, owner_type: owner[0], owner_id: owner[1], uploaded_by: rec.staff ? `user:${rec.staff.id}` : 'client', status: saved ? 'stored' : 'download_failed', created_at: nowIso() });
     run('UPDATE messages SET media_id=? WHERE id=?', mediaId, rec.msgId);
   });
@@ -202,9 +202,29 @@ function sendFaq(contact, faq) {
 }
 
 // ---------------------------------------------------------------- buttons
+// Button and list replies carry record ids. A modified WhatsApp client can send any
+// id, so every client action first checks that the record belongs to this contact.
+const ownsLead = (c, leadId) => !!leadId && getLead(leadId)?.contact_id === c.id;
+const ownsProject = (c, projectId) => !!projectId && one('SELECT client_contact_id FROM projects WHERE id=?', projectId)?.client_contact_id === c.id;
+function ownsButtonTarget(c, p) {
+  switch (p[0]) {
+    case 'VC': return ownsLead(c, one('SELECT lead_id FROM visit_offers WHERE id=?', Number(p[2]))?.lead_id);
+    case 'VN': return ownsLead(c, getVisit(Number(p[2]))?.lead_id);
+    case 'Q': return ownsLead(c, one('SELECT lead_id FROM quotations WHERE id=?', Number(p[2]))?.lead_id);
+    case 'MS': return ownsProject(c, one('SELECT project_id FROM milestones WHERE id=?', Number(p[2]))?.project_id);
+    case 'CR': return ownsProject(c, one('SELECT project_id FROM change_requests WHERE id=?', Number(p[2]))?.project_id);
+    default: return true;
+  }
+}
+
 function handleButton(id, rec, conv, ctx) {
   const c = rec.contact;
   const p = String(id).split(':');
+  if (!ownsButtonTarget(c, p)) {
+    audit(`contact:${c.id}`, 'bot.foreign_button_rejected', 'contact', c.id, { button: String(id).slice(0, 80) });
+    say(c, 'stale_action');
+    return true;
+  }
   switch (p[0]) {
     case 'M': return menuChoice(p, c);
     case 'F': return fieldChoice(p, c, conv, ctx);

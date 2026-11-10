@@ -68,12 +68,19 @@ async function personForm(u = {}) {
   const zones = settingsCache.zones.filter((z) => !['outside'].includes(z.code));
   const services = settingsCache.catalog.services;
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  // Only the owner creates manager/finance accounts or changes their login details (server enforces this too).
+  const isOwner = window.nsApp?.user?.role === 'owner';
+  const PRIV = ['owner', 'manager', 'finance'];
+  const locked = !isOwner && PRIV.includes(u.role);
+  const roleChoices = isOwner ? ROLES : ROLES.filter((r) => !PRIV.includes(r) || r === u.role);
+  const lock = locked ? 'disabled' : '';
   return html`<div class="form-grid">
-    <label class="field"><span>Name</span><input name="name" required maxlength="120" value="${u.name || ''}"></label><label class="field"><span>Access role</span><select name="role">${options(ROLES, u.role || 'staff')}</select></label>
+    ${locked ? html`<div class="notice warn full small">Only the owner can change the role, phone, email, password or status of manager and finance accounts.</div>` : ''}
+    <label class="field"><span>Name</span><input name="name" required maxlength="120" value="${u.name || ''}"></label><label class="field"><span>Access role</span><select name="role" ${lock}>${options(roleChoices, u.role || 'staff')}</select></label>
     <p class="muted small full">Access role controls permissions. For example, an IT employee can use role staff, department IT, and job title IT Executive. Architects/engineers who receive visit assignments need the corresponding access role.</p>
     <label class="field"><span>Department</span><input name="department" maxlength="80" value="${u.department || ''}" placeholder="e.g. IT, Design, Architecture, Office, Accounts"></label><label class="field"><span>Work mode</span><select name="work_mode">${options([{ value: 'office', label: 'Office' }, { value: 'field', label: 'Field / sites' }, { value: 'hybrid', label: 'Office + field' }], u.work_mode || 'office')}</select></label>
-    <label class="field"><span>WhatsApp number</span><input name="phone" value="${u.phone ? u.phone.slice(2) : ''}" placeholder="98xxxxxxxx"></label><label class="field"><span>Email (dashboard users)</span><input name="email" type="email" value="${u.email || ''}"></label>
-    <label class="field"><span>Job title</span><input name="title" maxlength="120" value="${u.title || ''}"></label><label class="field"><span>Dashboard password <span class="hint">(managers & finance)</span></span><input name="password" type="password" minlength="8" placeholder="${u.id ? 'leave blank to keep' : ''}"></label>
+    <label class="field"><span>WhatsApp number</span><input name="phone" ${lock} value="${u.phone ? u.phone.slice(2) : ''}" placeholder="98xxxxxxxx"></label><label class="field"><span>Email (dashboard users)</span><input name="email" type="email" ${lock} value="${u.email || ''}"></label>
+    <label class="field"><span>Job title</span><input name="title" maxlength="120" value="${u.title || ''}"></label><label class="field"><span>Dashboard password <span class="hint">(managers & finance)</span></span><input name="password" type="password" minlength="8" ${lock} placeholder="${u.id ? 'leave blank to keep' : ''}"></label>
     <label class="field"><span>Shift start</span><input name="shift_start" type="time" value="${u.shift_start || '09:00'}"></label><label class="field"><span>Shift end</span><input name="shift_end" type="time" value="${u.shift_end || '18:00'}"></label>
     <label class="field"><span>Grace minutes</span><input name="grace_min" type="number" value="${u.grace_min ?? 15}"></label><label class="field"><span>Max visits per day</span><input name="daily_visit_cap" type="number" value="${u.daily_visit_cap ?? 3}"></label>
     <div class="field full"><span>Weekly off</span><div class="checks">${days.map((dd, i) => html`<label class="check"><input type="checkbox" name="weekly_off" data-multi="1" value="${i}" ${(u.weekly_off || [0]).includes(i) ? 'checked' : ''}> ${dd}</label>`)}</div></div>

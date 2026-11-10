@@ -4,6 +4,11 @@
 import { all, one } from '../db/index.js';
 import { jparse, inr, fmtDateLong, fmtSlot, prettyPhone, mapsLink, verifyToken } from '../lib/util.js';
 import { config } from '../config.js';
+
+// Numbers and dates are formatted defensively: a bad stored value must never
+// break the client page or be rendered as markup.
+const pct = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0; };
+const safeDate = (d) => { try { return fmtDateLong(d); } catch { return ''; } };
 import { financeSummary } from '../domain/finance.js';
 import { allocateAmounts } from '../lib/money.js';
 import { COMMERCIAL_MODELS, SERVICE_TYPES } from '../bot/catalog.js';
@@ -39,7 +44,7 @@ export function quotePage(token) {
   const latest = one('SELECT MAX(version) v FROM quotations WHERE lead_id=?', q.lead_id).v;
   const stale = q.version !== latest || ['superseded', 'expired'].includes(q.status);
   const body = `<h1>Quotation ${esc(q.ref)} <span class="pill">v${q.version}</span></h1>
-<p class="muted">For ${esc(lead?.name || 'client')} · ${esc(leadPlace(lead || {}))} · Valid till ${esc(fmtDateLong(q.valid_until))}</p>
+<p class="muted">For ${esc(lead?.name || 'client')} · ${esc(leadPlace(lead || {}))} · Valid till ${esc(safeDate(q.valid_until))}</p>
 ${stale ? '<div class="card" style="border-color:var(--warn)"><b>This version is no longer current.</b> Please check the latest quotation we sent on WhatsApp.</div>' : ''}
 <div class="card"><div class="row"><div><b>${esc(SERVICE_TYPES[q.service_type] || q.service_type)}</b> · ${esc(COMMERCIAL_MODELS[q.commercial_model] || q.commercial_model)}</div><div class="pill">${esc(q.status.replace(/_/g, ' '))}</div></div>
 <table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
@@ -64,11 +69,11 @@ export function projectPage(token) {
   const body = `<h1>${esc(p.ref)}</h1><p class="muted">${esc(p.name || '')}</p>
 <div class="card"><div class="row"><div><b>Status:</b> ${esc(p.status.replace(/_/g, ' '))}</div><div>${done}/${ms.length} stages done</div></div>
 <div class="bar" style="margin-top:10px"><i style="width:${ms.length ? Math.round((done / ms.length) * 100) : 0}%"></i></div></div>
-<h2>Stages</h2><div class="card"><table><tbody>${ms.map((m) => `<tr><td>${m.seq}. ${esc(m.name)}</td><td>${esc(m.status.replace(/_/g, ' '))}${m.status === 'in_progress' ? ` · ${m.progress}%` : ''}</td><td class="num">${m.planned_end ? esc(fmtDateLong(m.planned_end)) : ''}</td></tr>`).join('')}</tbody></table></div>
-<h2>Daily site updates</h2>${logs.length ? logs.map((l) => { const ph = photos(l.id); const lab = jparse(l.labour, {}); const workers = Object.values(lab).reduce((a, b) => a + Number(b || 0), 0); return `<div class="card"><div class="row"><b>${esc(fmtDateLong(l.log_date))}</b>${workers ? `<span class="muted">👷 ${workers} on site</span>` : ''}</div><p>${esc(l.work_done || '')}</p>${ph.length ? `<div class="grid">${ph.map((m) => `<a href="/media/${m.id}?t=${encodeURIComponent(token)}"><img loading="lazy" src="/media/${m.id}?t=${encodeURIComponent(token)}" alt="${esc(m.caption || 'Site photo')}"></a>`).join('')}</div>` : ''}</div>`; }).join('') : '<p class="muted">Updates will appear here once work starts.</p>'}
+<h2>Stages</h2><div class="card"><table><tbody>${ms.map((m) => `<tr><td>${m.seq}. ${esc(m.name)}</td><td>${esc(m.status.replace(/_/g, ' '))}${m.status === 'in_progress' ? ` · ${pct(m.progress)}%` : ''}</td><td class="num">${m.planned_end ? esc(safeDate(m.planned_end)) : ''}</td></tr>`).join('')}</tbody></table></div>
+<h2>Daily site updates</h2>${logs.length ? logs.map((l) => { const ph = photos(l.id); const lab = jparse(l.labour, {}); const workers = Object.values(lab).reduce((a, b) => a + Number(b || 0), 0); return `<div class="card"><div class="row"><b>${esc(safeDate(l.log_date))}</b>${workers ? `<span class="muted">👷 ${workers} on site</span>` : ''}</div><p>${esc(l.work_done || '')}</p>${ph.length ? `<div class="grid">${ph.map((m) => `<a href="/media/${m.id}?t=${encodeURIComponent(token)}"><img loading="lazy" src="/media/${m.id}?t=${encodeURIComponent(token)}" alt="${esc(m.caption || 'Site photo')}"></a>`).join('')}</div>` : ''}</div>`; }).join('') : '<p class="muted">Updates will appear here once work starts.</p>'}
 <h2>Payments</h2><div class="card"><div class="row"><div>Contract value <b>${inr(p.contract_value)}</b></div><div>Net paid <b>${inr(paid)}</b>${financials.refunded ? ` · refunded ${inr(financials.refunded)}` : ''}</div></div>
 <table><tbody>${inv.map((i) => `<tr><td>${esc(i.ref)} · ${esc(i.title)}</td><td>${esc(i.status.replace(/_/g, ' '))}</td><td class="num">${inr(i.amount)}</td></tr>`).join('')}</tbody></table></div>
-${p.warranty_until ? `<div class="card">🔑 Handed over ${esc(fmtDateLong(p.handover_at))} · Structural warranty till <b>${esc(fmtDateLong(p.warranty_until))}</b></div>` : ''}`;
+${p.warranty_until ? `<div class="card">🔑 Handed over ${esc(safeDate(p.handover_at))} · Structural warranty till <b>${esc(safeDate(p.warranty_until))}</b></div>` : ''}`;
   return page(`Project ${p.ref}`, body);
 }
 

@@ -10,7 +10,8 @@ Two apps, one system:
 
 Add people in *Team & attendance → ＋ Add person* (role, zones, skills, shift, weekly off, visits per day).
 The PIN is shown once; *Reset PIN* makes a new one. Finance users see projects, invoices, expenses and payroll
-but not chats.
+but not chats. Only the owner can add manager or finance accounts or change their login details, role or PIN.
+A phone + PIN login to the employee app gives employee access only, even for the owner or a manager.
 
 ---
 

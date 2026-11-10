@@ -1,4 +1,4 @@
-import { html, raw, api, on, toast, modal, ago, dt, date, inr, badge, empty, label, options, phone, $, formData } from '/shared/ui.js';
+import { html, raw, esc, api, on, toast, modal, ago, dt, date, inr, badge, empty, label, options, phone, $, formData } from '/shared/ui.js';
 
 const STATUSES = ['capturing', 'awaiting_approval', 'scheduling', 'visit_confirmed', 'visit_done', 'quoting', 'quote_sent', 'needs_followup', 'out_of_area', 'won', 'lost', 'stale'];
 let catalog = null;
@@ -66,8 +66,8 @@ async function leadForm(l = {}) {
 async function quoteModal(leadId) {
   const def = await api.get('/api/quote-defaults');
   const sched = (m) => (def.schedules[m] || def.schedules.with_material);
-  const rowHtml = (i = {}) => `<tr><td><input name="desc" value="${i.desc || ''}" placeholder="e.g. Turnkey construction G+1"></td><td><input name="qty" type="number" step="any" value="${i.qty || ''}" style="width:90px"></td><td><input name="unit" value="${i.unit || 'sq ft'}" style="width:80px"></td><td><input name="rate" type="number" step="any" value="${i.rate || ''}" style="width:110px"></td><td><button type="button" class="icon-btn" data-delrow>✕</button></td></tr>`;
-  const schedHtml = (list) => list.map((m) => `<tr><td><input name="sname" value="${m.name}"></td><td><input name="spct" type="number" step="any" value="${m.pct}" style="width:80px"></td><td><label class="check"><input type="checkbox" name="ssite" ${m.site === false ? '' : 'checked'}> site work</label></td></tr>`).join('');
+  const rowHtml = (i = {}) => `<tr><td><input name="desc" value="${esc(i.desc || '')}" placeholder="e.g. Turnkey construction G+1"></td><td><input name="qty" type="number" step="any" value="${esc(i.qty || '')}" style="width:90px"></td><td><input name="unit" value="${esc(i.unit || 'sq ft')}" style="width:80px"></td><td><input name="rate" type="number" step="any" value="${esc(i.rate || '')}" style="width:110px"></td><td><button type="button" class="icon-btn" data-delrow>✕</button></td></tr>`;
+  const schedHtml = (list) => list.map((m) => `<tr><td><input name="sname" value="${esc(m.name)}"></td><td><input name="spct" type="number" step="any" value="${esc(m.pct)}" style="width:80px"></td><td><label class="check"><input type="checkbox" name="ssite" ${m.site === false ? '' : 'checked'}> site work</label></td></tr>`).join('');
   return modal({
     title: 'New quotation', wide: true, submit: 'Save & submit for approval',
     body: html`<div class="form-grid"><label class="field"><span>Service type</span><select name="service_type">${options(Object.entries(def.types).map(([v, l]) => ({ value: v, label: l })), 'construction')}</select></label>

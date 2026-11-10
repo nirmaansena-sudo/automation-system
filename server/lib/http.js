@@ -3,7 +3,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isIP } from 'node:net';
+import { isIP, BlockList } from 'node:net';
 
 export class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -71,16 +71,56 @@ export function parseCookies(header) {
   return out;
 }
 
+// Content Security Policy: only this site's own scripts run, so injected markup cannot
+// execute code even if a value slipped past escaping.
+const APP_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+const PAGE_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 const normalizeIp = (value) => String(value || '').trim().replace(/^::ffff:/, '');
+const PRIVATE_NETS = new BlockList();
+for (const [net, bits] of [['10.0.0.0', 8], ['172.16.0.0', 12], ['192.168.0.0', 16], ['127.0.0.0', 8], ['100.64.0.0', 10]]) PRIVATE_NETS.addSubnet(net, bits, 'ipv4');
+PRIVATE_NETS.addAddress('::1', 'ipv6'); PRIVATE_NETS.addSubnet('fc00::', 7, 'ipv6');
+const isPrivate = (ip) => { const fam = isIP(ip); return fam ? PRIVATE_NETS.check(ip, fam === 6 ? 'ipv6' : 'ipv4') : false; };
+
+/**
+ * Trusted reverse proxies: exact addresses or CIDR ranges ("172.30.97.10",
+ * "172.30.97.0/24", "::1"). Invalid entries are ignored with a warning.
+ */
+const matcherCache = new WeakMap();
+export function trustMatcher(list = []) {
+  if (matcherCache.has(list)) return matcherCache.get(list);
+  const block = new BlockList(); let count = 0;
+  for (const raw of list) {
+    const entry = normalizeIp(raw); if (!entry) continue;
+    const [addr, bits] = entry.split('/'); const fam = isIP(addr);
+    const n = bits === undefined ? null : Number(bits);
+    if (!fam || (n !== null && (!Number.isInteger(n) || n < 0 || n > (fam === 6 ? 128 : 32)))) { console.warn(`TRUSTED_PROXY_IPS: ignoring invalid entry "${raw}"`); continue; }
+    if (n === null) block.addAddress(addr, fam === 6 ? 'ipv6' : 'ipv4'); else block.addSubnet(addr, n, fam === 6 ? 'ipv6' : 'ipv4');
+    count++;
+  }
+  const match = (ip) => { const fam = isIP(ip); return count > 0 && !!fam && block.check(ip, fam === 6 ? 'ipv6' : 'ipv4'); };
+  matcherCache.set(list, match);
+  return match;
+}
+
+// Set when requests carry X-Forwarded-For from a private address that is not
+// trusted: the app is behind a proxy that is not configured, so every user
+// would share the proxy's address (login limits, audit, sessions).
+let proxyMisconfig = null;
+export const proxyWarning = () => proxyMisconfig;
+
 export function clientIp(req, trustedProxies = []) {
   const remote = normalizeIp(req.socket?.remoteAddress);
-  const trusted = new Set(trustedProxies.map(normalizeIp));
-  if (!trusted.has(remote)) return remote;
+  const trusted = trustMatcher(trustedProxies);
+  if (!trusted(remote)) {
+    if (req.headers['x-forwarded-for'] && isPrivate(remote) && !proxyMisconfig) proxyMisconfig = { remote, at: new Date().toISOString() };
+    return remote;
+  }
   // Walk from the immediate peer toward the client. Never trust the leftmost
   // value merely because the request arrived through a proxy.
   const chain = String(req.headers['x-forwarded-for'] || '').split(',').map(normalizeIp);
   let current = remote;
-  for (let i = chain.length - 1; i >= 0 && trusted.has(current); i--) {
+  for (let i = chain.length - 1; i >= 0 && trusted(current); i--) {
     if (!isIP(chain[i])) break;
     current = chain[i];
   }
@@ -104,7 +144,8 @@ function makeCtx(req, res, url, trustedProxies) {
     },
     html(s, status = 200) {
       if (res.headersSent) return;
-      res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'SAMEORIGIN' });
+      // Server-rendered client pages (/q/ /p/ /v/) contain no scripts at all.
+      res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': PAGE_CSP });
       res.end(s);
     },
     text(s, status = 200, type = 'text/plain; charset=utf-8') {
@@ -137,6 +178,7 @@ export function serveStatic(ctx, rootDir, relPath, { spaFallback } = {}) {
     'Content-Type': type, 'Content-Length': buf.length,
     'Cache-Control': type.startsWith('text/html') || type.includes('javascript') || type.startsWith('text/css') ? 'no-cache' : 'public, max-age=3600',
     'X-Content-Type-Options': 'nosniff',
+    ...(type.startsWith('text/html') ? { 'Content-Security-Policy': APP_CSP, 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'SAMEORIGIN' } : {}),
   });
   ctx.res.end(buf);
 }
@@ -180,6 +222,9 @@ export function createServer({ router, before, fallback, onError, trustedProxies
       }
       ctx.params = m.params;
       const opts = m.route.opts || {};
+      // Authenticate before reading the body, so anonymous requests cannot make the
+      // server buffer large uploads (up to 40 MB on some routes).
+      if (before) await before(ctx, opts);
       if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
         ctx.rawBody = await readBody(req, opts.limit || 2 * 1024 * 1024);
         const type = String(req.headers['content-type'] || '');
@@ -189,7 +234,6 @@ export function createServer({ router, before, fallback, onError, trustedProxies
           ctx.body = Object.fromEntries(new URLSearchParams(ctx.rawBody.toString('utf8')));
         } else ctx.body = {};
       }
-      if (before) await before(ctx, opts);
       const out = await m.route.handler(ctx);
       if (out !== undefined && !res.headersSent && !ctx.headersSent) ctx.json(out);
     } catch (e) {

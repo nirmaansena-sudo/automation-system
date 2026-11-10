@@ -12,6 +12,9 @@ export default {
         <form class="card stack" id="security-password"><h2>Change password</h2>${passwordField()}
           <label class="field"><span>New password (8–128 characters)</span><input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
           ${security.enabled ? factorField() : ''}<p class="muted small">Changing your password signs out every device, including this one.</p><button class="btn primary">Change password</button></form>
+        <form class="card stack" id="security-pin"><h2>Employee app PIN</h2><p class="muted small">Only needed if you also use the employee app on your phone. The app gives only employee access (your own visits, sites and claims), never the dashboard.</p>${passwordField()}
+          <label class="field"><span>New PIN (6–8 digits)</span><input type="password" name="pin" inputmode="numeric" pattern="\\d{6,8}" minlength="6" maxlength="8" required autocomplete="new-password"></label>
+          ${security.enabled ? factorField() : ''}<button class="btn">Save PIN</button></form>
         <section class="card stack"><h2>Two-step verification</h2>
           <p>${security.enabled ? 'Enabled. Sign-in requires your password and an authenticator or recovery code.' : 'Add a code from an authenticator app when you sign in.'}</p>
           ${security.enabled ? html`<p class="muted">${security.recovery_codes_remaining} recovery codes remaining. Keep these in a safe place. Each works once.</p><button class="btn" id="disable-mfa">Turn off two-step verification</button>` : html`<button class="btn primary" id="setup-mfa">Set up authenticator</button>`}
@@ -20,6 +23,11 @@ export default {
   },
   mount(root, ctx) {
     on(root, 'submit', '#security-password', async (event, form) => {
+      event.preventDefault(); const button = form.querySelector('button'); button.disabled = true;
+      try { await api.post('/api/me/password', formData(form)); location.reload(); }
+      catch (error) { toast(error.message, 'err'); button.disabled = false; }
+    });
+    on(root, 'submit', '#security-pin', async (event, form) => {
       event.preventDefault(); const button = form.querySelector('button'); button.disabled = true;
       try { await api.post('/api/me/password', formData(form)); location.reload(); }
       catch (error) { toast(error.message, 'err'); button.disabled = false; }

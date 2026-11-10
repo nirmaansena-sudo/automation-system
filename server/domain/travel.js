@@ -53,11 +53,22 @@ function visitContext(visitId) {
   return v;
 }
 function canView(v, user) { if (!['owner', 'manager', 'finance'].includes(user.role) && v.architect_id !== user.id) throw forbidden('This visit is not assigned to you'); }
+const HOME_CHANGE_REVIEW_DAYS = 30;
+/** A trip from a home pin that moved recently needs an explicit manager check. */
+function homeChange(row) {
+  if (row.origin_type !== 'home') return null;
+  const loc = one('SELECT home_changed_at, home_moved_km, home_changed_by FROM architect_locations WHERE user_id=?', row.user_id);
+  // Pins set or moved by a manager are already checked; the architect's own changes are not.
+  if (!loc?.home_changed_at || loc.home_changed_by !== `user:${row.user_id}`) return null;
+  const days = (Date.now() - Date.parse(loc.home_changed_at)) / 86400000;
+  if (!(days < HOME_CHANGE_REVIEW_DAYS)) return null;
+  return { changed_at: loc.home_changed_at, days_ago: Math.max(0, Math.floor(days)), moved_km: loc.home_moved_km, by_self: loc.home_changed_by === `user:${row.user_id}` };
+}
 function publicTravel(row) {
   // Route endpoints include an architect's home. APIs need the chosen origin
   // type and approved amounts, not precise coordinates from the audit snapshot.
   const { origin_lat, origin_lng, site_lat, site_lng, ...safe } = row;
-  return safe;
+  return { ...safe, home_change: homeChange(row) };
 }
 function staleTravel(row, visit) {
   const policy = jparse(row.policy, {});
@@ -119,6 +130,10 @@ export function approveTravel(visitId, user, data) {
     const current = readTravel(visitId, user), v = visitContext(visitId);
     if (!current || current.stale || v.status === 'cancelled' || current.expense_id) throw bad('Select a current origin before approval');
     if (Number(data.expected_revision) !== current.revision) throw bad('Estimate changed; refresh before approval');
+    if (current.home_change && data.ack_home_change !== true) {
+      const h = current.home_change;
+      throw bad(`The home pin was changed ${h.days_ago === 0 ? 'today' : `${h.days_ago} day(s) ago`}${h.moved_km !== null ? ` (moved ${h.moved_km} km)` : ''}${h.by_self ? ' by the architect' : ''}. Check the starting point, then tick “I checked the home location”.`);
+    }
     if (String(data.note || '').trim().length < 3) throw bad('Add a short approval or distance verification note');
     const policy = validateTravel({ ...current.policy, ...(data.rate_per_km !== undefined ? { rate_per_km: data.rate_per_km } : {}) });
     if (policy.rate_per_km === null) throw bad('Manager must set the rate per km first');
@@ -131,7 +146,7 @@ export function approveTravel(visitId, user, data) {
     }
     if (source === 'estimated' && data.accept_estimate !== true) throw bad('Verify the road distance or explicitly accept the estimate');
     run("UPDATE visit_travel SET distance_km=?,distance_source=?,amount=?,policy=?,status='approved',revision=revision+1,approved_by=?,approved_at=?,note=?,updated_at=? WHERE visit_id=?", distance, source, travelAmount(distance, policy), JSON.stringify(policy), user.id, nowIso(), String(data.note).trim().slice(0, 1000), nowIso(), visitId);
-    audit(`user:${user.id}`, 'travel.approved', 'visit', visitId, { distance_km: distance, amount: travelAmount(distance, policy), rate: policy.rate_per_km, source });
+    audit(`user:${user.id}`, 'travel.approved', 'visit', visitId, { distance_km: distance, amount: travelAmount(distance, policy), rate: policy.rate_per_km, source, home_change_acknowledged: current.home_change ? { days_ago: current.home_change.days_ago, moved_km: current.home_change.moved_km } : undefined });
     return readTravel(visitId, user);
   });
 }

@@ -122,7 +122,7 @@ test('abort removes raw snapshots and incomplete reports without leaving the exp
 
 test('report endpoints allow owner/manager, reject finance/employees and stream valid download bytes',async()=>{
   for(const role of ['owner','manager']){const r=await fetch(h.base+'/api/exports/inventory',{headers:{cookie:cookies[role]}});assert.equal(r.status,200);assert.ok((await r.json()).tables.some(t=>t.name==='payments'));}
-  for(const role of ['finance','employee'])for(const suffix of ['inventory','business.json','business.zip']){const r=await fetch(h.base+'/api/exports/'+suffix,{headers:{cookie:cookies[role]}});assert.equal(r.status,403,`${role} ${suffix}`);await r.arrayBuffer();}
+  for(const role of ['finance','employee'])for(const suffix of ['inventory','business.json','business.zip']){const r=await fetch(h.base+'/api/exports/'+suffix,{headers:{cookie:cookies[role]}});assert.equal(r.status,role==='employee'?401:403,`${role} ${suffix}`);await r.arrayBuffer();}
   assert.equal((await fetch(h.base+'/api/exports/inventory')).status,401);
   const r=await fetch(h.base+'/api/exports/business.zip',{headers:{cookie:cookies.owner}});assert.equal(r.status,200);assert.equal(r.headers.get('content-type'),'application/zip');assert.match(r.headers.get('content-disposition'),/attachment; filename="nirmaan-business-/);
   const bytes=Buffer.from(await r.arrayBuffer());assert.equal(Number(r.headers.get('content-length')),bytes.length);assert.equal(r.headers.get('x-export-sha256'),crypto.createHash('sha256').update(bytes).digest('hex'));assert.ok(readZip(bytes).has('payments.csv'));

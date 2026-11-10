@@ -4,7 +4,8 @@ import { audit } from '../core/base.js';
 import { exportInventory, prepareBusinessExport, cleanupStaleExports } from '../domain/exports.js';
 
 export function registerExports(r) {
-  const allowed={auth:'any',roles:['owner','manager']};
+  // Full-data exports need a dashboard session (password + two-step code), never a PIN-based app session.
+  const allowed={auth:'dashboard',roles:['owner','manager']};
   cleanupStaleExports();
   r.get('/api/exports/inventory',allowed,()=>exportInventory());
   const download=format=>async ctx=>{

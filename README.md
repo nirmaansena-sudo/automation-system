@@ -1,4 +1,9 @@
-# Nirmaan Sena 1.2 — Hybrid Automation System
+# Nirmaan Sena 1.2.1 — Hybrid Automation System
+
+**1.2.1 security update:** fixes from a two-round red-team review — client buttons tied to their owner,
+no stored scripts, owner-only control of manager/finance accounts, PIN logins limited to employee rights,
+real visitor addresses behind the proxy, two-person expense approval, private n8n. Read
+[SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) and do its four upgrade steps.
 
 **New in 1.2:** separate client and employee records; manager attendance for every department;
 downloadable CSV/JSON business data; architect WhatsApp work menus; stronger customer handover.

@@ -16,8 +16,8 @@ fixed HTTPS address, so it moves to a small cloud server. Plan about half a day.
 
 * **Server**: any VPS with Ubuntu 24.04 LTS, 2 vCPU, 2–4 GB RAM, 40 GB SSD, preferably in an Indian region
   (Mumbai/Bengaluru) for speed. Typical cost ₹500–1,500 per month.
-* **Domain**: create two DNS **A records** pointing to the server's IP address:
-  `ops.nirmaansena.com` (dashboard, employee app, WhatsApp webhook) and `n8n.ops.nirmaansena.com` (n8n).
+* **Domain**: create one DNS **A record** pointing to the server's IP address:
+  `ops.nirmaansena.com` (dashboard, employee app, WhatsApp webhook). n8n is not put on the internet.
 * HTTPS certificates are created automatically (Caddy) — nothing to buy.
 
 ## 2. Install
@@ -92,8 +92,11 @@ Then, in the dashboard:
 
 ## 5. n8n (optional, recommended)
 
-1. Set `N8N_BASE_URL=http://n8n:5678`, run `docker compose --profile automation up -d --build`, then open `https://n8n.ops.nirmaansena.com`, create the n8n owner account and turn on two-factor login
-   (*Settings → Personal*), because this page is on the internet.
+1. Set `N8N_BASE_URL=http://n8n:5678` and run `docker compose --profile automation up -d --build`.
+   n8n listens only on the server itself. Open it from your PC through an SSH tunnel:
+   `ssh -L 5678:127.0.0.1:5678 root@<SERVER-IP>`, then browse to <http://localhost:5678>, create the n8n
+   owner account straight away and turn on two-factor login (*Settings → Personal*). n8n workflows can read
+   the automation key, so only the owner should have an n8n login.
 2. Import the five files from `n8n/workflows` and publish them ([n8n/README.md](../n8n/README.md)).
 3. In `.env` set `ROUTINES_MODE=n8n` (and `AI_MODE=n8n` if you use workflow 01), then `docker compose up -d`.
 4. *Settings → Connections* should show n8n as **connected** within 15 minutes.
@@ -160,7 +163,12 @@ applied automatically at start. Take a manual backup first (*Database → Backup
 - [ ] Owner password is long and unique; every staff member has their own login (no shared PINs).
 - [ ] `COOKIE_SECURE=true`, all four secrets set, `WHATSAPP_APP_SECRET` set (webhook signatures are checked).
 - [ ] Firewall allows only SSH, 80 and 443; SSH with a key, not a password.
-- [ ] n8n owner account has two-factor login.
+- [ ] n8n owner account has two-factor login, and n8n is reached only through the SSH tunnel.
+- [ ] Owner, managers and finance have two-step verification on (*My security*).
+- [ ] *Settings → Connections → System health* shows no proxy warning (Docker sets `TRUSTED_PROXY_IPS` for
+      Caddy automatically; if you use another proxy, set its address there).
+- [ ] No demo accounts are active (the health panel warns if any are).
+- [ ] The backup key has been downloaded and stored off the server (the health panel reminds you until it is).
 - [ ] Website form shows a privacy notice and a WhatsApp consent tick box (sent as `consent`).
 - [ ] Staff know: a client can type **STOP** to stop messages; a request to delete their data is done with
       *Clients → (client) → Erase personal data* (owner) — the audit log keeps only that it happened.

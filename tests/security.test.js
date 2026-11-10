@@ -42,8 +42,12 @@ test('managers cannot reset an owner PIN, and an app PIN cannot change the owner
   const oldHash = h.db.one('SELECT pin_hash FROM users WHERE id=?', owner.id).pin_hash;
   const denied = await h.api('POST', `/api/team/${owner.id}/reset-pin`, {}, managerAuth);
   assert.equal(denied.status, 403); assert.equal(h.db.one('SELECT pin_hash FROM users WHERE id=?', owner.id).pin_hash, oldHash);
-  const login = await appLogin('9999000001', 'password123'); assert.equal(login.status, 200);
-  const changed = await h.api('POST', '/api/me/password', { password: 'malicious-new-password', current_pin: 'password123' }, bearer(login.body.token));
+  // The setup password is no longer the owner's app PIN (review 2026-11, finding 10.1).
+  assert.equal((await appLogin('9999000001', 'password123')).status, 401);
+  const { hashSecret } = await import('../server/lib/util.js');
+  h.db.run('UPDATE users SET pin_hash=? WHERE id=?', hashSecret('707070'), owner.id);
+  const login = await appLogin('9999000001', '707070'); assert.equal(login.status, 200);
+  const changed = await h.api('POST', '/api/me/password', { password: 'malicious-new-password', current_pin: '707070' }, bearer(login.body.token));
   assert.equal(changed.status, 400);
   assert.equal((await dashboard('owner@test.local', 'password123')).status, 200);
 });

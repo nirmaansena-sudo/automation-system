@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { all, one, run, insert, update, tx, tableNames, columns, backupTo } from '../db/index.js';
 import { nowIso, addMinIso, jparse, istDate, addDays, fromIst, normPhone, randomToken, fmtSlot, istParts, minutesBetween } from '../lib/util.js';
-import { bad, notFound, forbidden, broadcast } from '../lib/http.js';
+import { bad, notFound, forbidden, broadcast, HttpError } from '../lib/http.js';
 import { config, publicSecretsForOwner } from '../config.js';
 import { eraseContact } from '../domain/privacy.js';
 import { validateSettings } from '../lib/settings-validation.js';
@@ -12,7 +12,7 @@ import { listFullBackups } from '../lib/backups.js';
 import { retryTimer } from '../core/timers.js';
 import { financeSummary } from '../domain/finance.js';
 import { paise, rupees } from '../lib/money.js';
-import { audit, notify, createTask, getSettings, saveSettings, DEFAULT_SETTINGS, getState } from '../core/base.js';
+import { audit, notify, createTask, getSettings, saveSettings, DEFAULT_SETTINGS, getState, setState } from '../core/base.js';
 import { enqueueWhatsApp, retryJob, outboxHealth, resolveUnknownJob } from '../core/outbox.js';
 import { providerStatus } from '../whatsapp/providers.js';
 import { aiStatus } from '../bot/ai.js';
@@ -36,6 +36,8 @@ const O = ['owner'];
 const parseRow = (r, keys) => { if (!r) return r; const o = { ...r }; for (const k of keys) o[k] = jparse(o[k], k.endsWith('s') ? [] : {}); return o; };
 const mediaFor = (type, id) => all('SELECT id, mime, caption, uploaded_by, created_at, lat, lng FROM media WHERE owner_type=? AND owner_id=? ORDER BY id', type, id);
 const timeline = (type, id) => all('SELECT * FROM audit_log WHERE entity_type=? AND entity_id=? ORDER BY id DESC LIMIT 100', type, id).map((a) => ({ ...a, data: jparse(a.data, null) }));
+
+const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) && new Date(`${v}T00:00:00Z`).toISOString().startsWith(v);
 
 export function registerAdmin(r) {
   const d = (roles = MF) => ({ auth: 'dashboard', roles });
@@ -246,7 +248,10 @@ export function registerAdmin(r) {
   r.patch('/api/milestones/:id', d(M), (ctx) => tx(() => {
     const m = one('SELECT * FROM milestones WHERE id=?', Number(ctx.params.id)); if (!m) throw notFound();
     const b = ctx.body || {}; const patch = { updated_at: nowIso() };
-    for (const k of ['name', 'planned_start', 'planned_end', 'progress']) if (b[k] !== undefined) patch[k] = b[k];
+    // Validate everything that reaches the client's project page.
+    if (b.name !== undefined) { if (typeof b.name !== 'string' || !b.name.trim() || b.name.length > 120) throw bad('Stage name must be 1–120 characters'); patch.name = b.name.trim(); }
+    for (const k of ['planned_start', 'planned_end']) if (b[k] !== undefined) { if (b[k] !== null && b[k] !== '' && !isDate(b[k])) throw bad('Dates must be YYYY-MM-DD'); patch[k] = b[k] || null; }
+    if (b.progress !== undefined) { const n = Number(b.progress); if (b.progress === null || b.progress === '' || !Number.isInteger(n) || n < 0 || n > 100) throw bad('Progress must be a whole number from 0 to 100'); patch.progress = n; }
     if (b.start && m.status === 'planned') patch.status = 'in_progress';
     update('milestones', m.id, patch);
     audit(`user:${ctx.user.id}`, 'milestone.update', 'project', m.project_id, b);
@@ -262,6 +267,11 @@ export function registerAdmin(r) {
     let amount; try { amount = rupees(paise(b.amount, { min: 0.01 })); } catch (e) { throw bad(e.message); }
     if (b.payment_link) { try { if (!['https:', 'http:'].includes(new URL(b.payment_link).protocol)) throw new Error(); } catch { throw bad('Payment link must be an HTTP or HTTPS URL'); } }
     if (b.due_date && (!/^\d{4}-\d{2}-\d{2}$/.test(b.due_date) || !Number.isFinite(Date.parse(b.due_date)))) throw bad('Enter a valid due date');
+    if (b.title !== undefined && b.title !== null && (typeof b.title !== 'string' || b.title.length > 120)) throw bad('Invoice title must be at most 120 characters');
+    // Extra invoices go straight to the client on WhatsApp: block accidental double
+    // submits and amounts far above the contract.
+    if (one("SELECT 1 FROM invoices WHERE project_id=? AND milestone_id IS NULL AND amount=? AND status!='cancelled' AND created_at>?", p.id, amount, new Date(Date.now() - 10 * 60e3).toISOString())) throw bad('An invoice for this amount was just created for this project. Check Invoices before sending another.');
+    if (p.contract_value > 0 && amount > p.contract_value) throw bad('An extra invoice cannot exceed the contract value. Record a change request first.');
     const inv = issueInvoice(p, { id: null, amount, name: b.title || 'Invoice' }, { title: b.title });
     if (b.due_date) run('UPDATE invoices SET due_date=? WHERE id=?', b.due_date, inv.id);
     if (b.payment_link) run('UPDATE invoices SET payment_link=? WHERE id=?', b.payment_link, inv.id);
@@ -353,7 +363,7 @@ export function registerAdmin(r) {
     const month = ctx.query.month || istDate().slice(0, 7);
     return {
       user: publicUser(u), days: all('SELECT * FROM attendance_days WHERE user_id=? AND day LIKE ? ORDER BY day', u.id, `${month}%`),
-      events: all('SELECT * FROM attendance_events WHERE user_id=? ORDER BY effective_time DESC LIMIT 60', u.id).map((e) => parseRow(e, ['reasons'])),
+      events: all('SELECT * FROM attendance_events WHERE user_id=? ORDER BY effective_time DESC LIMIT 60', u.id).map((e) => parseRow(e, ['reasons'])).map((e) => (M.includes(ctx.user.role) ? e : { ...e, lat: null, lng: null, accuracy_m: null, distance_m: null })),
       tasks: all("SELECT * FROM tasks WHERE assignee_id=? AND (status NOT IN ('done','cancelled') OR updated_at > ?) ORDER BY status, due_at", u.id, addMinIso(nowIso(), -7 * 1440)),
       visits: all("SELECT v.*, l.ref lead_ref, l.name client FROM visits v JOIN leads l ON l.id=v.lead_id WHERE v.architect_id=? ORDER BY v.start_at DESC LIMIT 30", u.id),
       logs: all('SELECT l.*, p.ref FROM site_logs l JOIN projects p ON p.id=l.project_id WHERE l.user_id=? ORDER BY l.id DESC LIMIT 30', u.id),
@@ -368,7 +378,7 @@ export function registerAdmin(r) {
     const rows = all('SELECT * FROM attendance_days WHERE day LIKE ?', `${month}%`);
     return { month, users, days: rows };
   });
-  r.get('/api/attendance/events', d(), (ctx) => {
+  r.get('/api/attendance/events', d(M), (ctx) => {
     const day = ctx.query.day || istDate();
     return all('SELECT e.*, u.name FROM attendance_events e JOIN users u ON u.id=e.user_id WHERE e.effective_time>=? AND e.effective_time<? ORDER BY e.effective_time DESC', fromIst(day, '00:00').toISOString(), fromIst(addDays(day, 1), '00:00').toISOString()).map((e) => parseRow(e, ['reasons']));
   });
@@ -437,12 +447,17 @@ export function registerAdmin(r) {
     const q = ctx.query.q ? `%${ctx.query.q}%` : '%';
     return all('SELECT * FROM audit_log WHERE (action LIKE ? OR actor LIKE ? OR entity_type LIKE ? OR data LIKE ?) ORDER BY id DESC LIMIT 300', q, q, q, q).map((a) => ({ ...a, data: jparse(a.data, null) }));
   });
-  r.post('/api/data/backup', d(O), () => runRoutine('backup', 'manual', { force: true }));
+  r.post('/api/data/backup', d(O), () => {
+    const lastManual = one("SELECT started_at FROM routine_runs WHERE routine='backup' AND trigger='manual' ORDER BY id DESC LIMIT 1");
+    if (lastManual && Date.now() - Date.parse(lastManual.started_at) < 10 * 60e3) throw new HttpError(429, 'A backup was started in the last 10 minutes. Please wait.');
+    return runRoutine('backup', 'manual', { force: true });
+  });
   r.get('/api/data/backups', d(O), () => listFullBackups());
   r.get('/api/data/backup-key', d(O), (ctx) => {
     const key = path.join(config.dataDir, 'backup.key');
     if (config.backupPassword || !fs.existsSync(key)) throw bad('No generated backup key is in use. Keep your configured BACKUP_PASSWORD separately.');
     audit(`user:${ctx.user.id}`, 'data.backup_key_download', 'backup', null);
+    setState('backup_key_downloaded', nowIso());
     ctx.send(fs.readFileSync(key), 'application/octet-stream', { 'Content-Disposition': 'attachment; filename="nirmaan-backup.key"', 'Cache-Control': 'no-store' });
   });
   r.get('/api/data/backups/:file', d(O), (ctx) => {
@@ -483,7 +498,15 @@ export function registerAdmin(r) {
   r.get('/api/routines', d(), () => routineStatus());
   r.get('/api/timers/failed', d(M), () => all("SELECT id,kind,entity_type,entity_id,due_at,result FROM timers WHERE status='failed' ORDER BY id DESC LIMIT 200"));
   r.post('/api/timers/:id/retry', d(M), (ctx) => tx(() => ({ ok: retryTimer(Number(ctx.params.id), `user:${ctx.user.id}`) })));
-  r.post('/api/routines/:name/run', d(M), (ctx) => runRoutine(ctx.params.name, 'manual', { force: !!ctx.body?.force }));
+  r.post('/api/routines/:name/run', d(M), (ctx) => {
+    // Backups are the owner's: repeated forced runs would push older backups out of the 14 kept.
+    if (ctx.params.name === 'backup') {
+      if (ctx.user.role !== 'owner') throw forbidden('Only the owner can start a backup');
+      const lastManual = one("SELECT started_at FROM routine_runs WHERE routine='backup' AND trigger='manual' ORDER BY id DESC LIMIT 1");
+      if (lastManual && Date.now() - Date.parse(lastManual.started_at) < 10 * 60e3) throw new HttpError(429, 'A backup was started in the last 10 minutes. Please wait.');
+    }
+    return runRoutine(ctx.params.name, 'manual', { force: !!ctx.body?.force });
+  });
   r.post('/api/attendance/sweep/:which', d(M), (ctx) => tx(() => (ctx.params.which === 'morning' ? attendanceMorningSweep() : attendanceEveningSweep())));
   r.post('/api/settings/test-whatsapp', d(M), (ctx) => tx(() => {
     const wa = normPhone(ctx.body?.to); if (!wa) throw bad('Enter a phone number');

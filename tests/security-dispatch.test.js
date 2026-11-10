@@ -34,7 +34,7 @@ function fixture(status = 'report_submitted') {
 }
 async function approvedVisit() {
   const visit = fixture(); const selected = await travel.selectTravel(visit.id, architect, { origin_type: 'home' });
-  travel.approveTravel(visit.id, owner, { expected_revision: selected.revision, verified_distance_km: 12, note: 'Checked distance against actual route' });
+  travel.approveTravel(visit.id, owner, { ack_home_change: true, expected_revision: selected.revision, verified_distance_km: 12, note: 'Checked distance against actual route' });
   return visit;
 }
 
@@ -88,7 +88,7 @@ test('estimate revisions, changed assignments and null verified distance are rej
   await assert.rejects(travel.selectTravel(visit.id, architect, { origin_type: 'office' }), /estimate changed/);
   const second = await travel.selectTravel(visit.id, architect, { origin_type: 'office', expected_revision: first.revision });
   assert.throws(() => travel.approveTravel(visit.id, owner, { expected_revision: first.revision, verified_distance_km: 10, note: 'Route checked' }), /Estimate changed/);
-  assert.throws(() => travel.approveTravel(visit.id, owner, { expected_revision: second.revision, verified_distance_km: null, note: 'Route checked' }), /numeric/);
+  assert.throws(() => travel.approveTravel(visit.id, owner, { ack_home_change: true, expected_revision: second.revision, verified_distance_km: null, note: 'Route checked' }), /numeric/);
   h.db.run('UPDATE visits SET architect_id=? WHERE id=?', other.id, visit.id);
   assert.equal(travel.readTravel(visit.id, owner).stale, true);
   assert.throws(() => travel.approveTravel(visit.id, owner, { expected_revision: second.revision, verified_distance_km: 10, note: 'Route checked' }), /current origin/);

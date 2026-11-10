@@ -34,7 +34,7 @@ export function validateSettings(patch) {
     if (key === 'default_payment_schedules') {
       if (!object(value) || !Object.keys(value).length || Object.keys(value).length > 50) throw bad('Provide payment schedules keyed by service');
       for (const [service, stages] of Object.entries(value)) {
-        if (!text(service, 1, 100) || !Array.isArray(stages) || !stages.length || stages.length > 50 || stages.some((s) => !object(s) || !text(s.name, 1, 200) || !numeric(s.pct, 0, 100) || (s.site !== undefined && typeof s.site !== 'boolean')) || Math.abs(stages.reduce((sum, s) => sum + s.pct, 0) - 100) > 0.001) throw bad(`Payment schedule ${service} must have named stages totalling 100%`);
+        if (!text(service, 1, 100) || !Array.isArray(stages) || !stages.length || stages.length > 50 || stages.some((s) => !object(s) || !text(s.name, 1, 200) || /[<>]/.test(s.name) || !numeric(s.pct, 0, 100) || (s.site !== undefined && typeof s.site !== 'boolean')) || Math.abs(stages.reduce((sum, s) => sum + s.pct, 0) - 100) > 0.001) throw bad(`Payment schedule ${service} must have named stages totalling 100%`);
       }
     }
   }

@@ -8,6 +8,7 @@ import { enqueueWhatsApp, enqueueEvent, registerGuard } from '../core/outbox.js'
 import { getUser, ensureContact, appLink } from './common.js';
 import { createApproval } from './leads.js';
 import crypto from 'node:crypto';
+import { paise } from '../lib/money.js';
 import { forbidden, bad } from '../lib/http.js';
 import { validatePassword, DASHBOARD_ROLES } from '../lib/auth.js';
 
@@ -21,11 +22,46 @@ export function publicUser(u) {
   const { password_hash, pin_hash, ...rest } = u;
   return { ...rest, zones: jparse(u.zones, []), skills: jparse(u.skills, []), weekly_off: jparse(u.weekly_off, []), has_password: !!password_hash, has_pin: !!pin_hash };
 }
+// Dashboard accounts (owner, manager, finance) can see all client data and money.
+// Only the owner may create them, change their login details or access, reset their
+// PIN, or move anyone into or out of those roles; otherwise one manager could take
+// over another's account. Managers still edit shifts, zones etc. of everyone.
+const PRIVILEGED = DASHBOARD_ROLES;
+const SECURITY_LABELS = { password: 'password', role: 'role', phone: 'phone number', email: 'login email', active: 'account status', pin: 'app PIN' };
+function securityChanges(u, data) {
+  const out = [];
+  if (data.password) out.push('password');
+  if (data.role !== undefined && data.role !== u.role) out.push('role');
+  if (data.phone !== undefined && (data.phone ? normPhone(data.phone) : null) !== u.phone) out.push('phone');
+  if (data.email !== undefined && (data.email ? String(data.email).toLowerCase().trim() : null) !== u.email) out.push('email');
+  if (data.active !== undefined && (data.active ? 1 : 0) !== u.active) out.push('active');
+  return out;
+}
+function requireOwnerFor(actor, target, data = {}, changes = ['create']) {
+  if (!actor || actor.role === 'owner' || !changes.length) return;
+  const privileged = (target && PRIVILEGED.includes(target.role)) || (data.role !== undefined && PRIVILEGED.includes(data.role));
+  if (privileged) throw forbidden('Only the owner can create manager or finance accounts, change their login details or access, or reset their PIN');
+}
+/** Tell the person (and the owner) when someone else changes their login or access. */
+function securityNotice(target, actor, keys) {
+  const changed = keys.map((k) => SECURITY_LABELS[k] || k);
+  if (!changed.length || !actor || actor.id === target.id) return;
+  const what = changed.join(', ');
+  notify({ userId: target.id, title: 'Your account was changed', body: `${actor.name || 'A manager'} changed your ${what}. If you did not expect this, tell the owner.`, level: 'warn' });
+  if (actor.role !== 'owner') notify({ audience: 'owner', title: `Account changed: ${target.name}`, body: `${actor.name || `user ${actor.id}`} changed ${what}.`, link: '#/team', level: 'warn' });
+}
+/** What a person may see about themselves: no manager-written HR notes. */
+export function selfUser(u) {
+  const p = publicUser(u);
+  if (p) delete p.notes;
+  return p;
+}
 export function createUser(data, actor) {
   if (!data.name || !ROLES.includes(data.role)) return { error: 'Name and a valid role are required' };
   const error = validateUser(data);
   if (error) return { error };
   if (actor && actor.role !== 'owner' && data.role === 'owner') throw forbidden('Only an owner can create an owner account');
+  requireOwnerFor(actor, null, data);
   const phone = data.phone ? normPhone(data.phone) : null;
   if (phone && one('SELECT 1 FROM users WHERE phone=?', phone)) return { error: 'Another person already uses this phone number' };
   if (data.email && one('SELECT 1 FROM users WHERE email=?', String(data.email).toLowerCase())) return { error: 'Another person already uses this email' };
@@ -47,6 +83,8 @@ export function updateUser(id, data, actor) {
   const u = getUser(id);
   if (!u) return { error: 'Not found' };
   if (actor && actor.role !== 'owner' && (u.role === 'owner' || data.role === 'owner')) throw forbidden('Only an owner can change an owner account');
+  const changes = securityChanges(u, data);
+  requireOwnerFor(actor, u, data, changes);
   const error = validateUser(data);
   if (error) return { error };
   const patch = { updated_at: nowIso() };
@@ -64,6 +102,7 @@ export function updateUser(id, data, actor) {
   if (patch.phone) ensureContact(patch.phone, { userId: id });
   if (patch.active === 0 || patch.password_hash || (patch.role && patch.role !== u.role) || (patch.phone && patch.phone !== u.phone)) run('DELETE FROM sessions WHERE user_id=?', id);
   audit(`user:${actor?.id}`, 'user.updated', 'user', id, { ...patch, password_hash: undefined, password: data.password ? '***' : undefined });
+  securityNotice(u, actor, changes);
   onCommit(() => broadcast('team'));
   return { ok: true };
 }
@@ -72,10 +111,12 @@ export function resetPin(id, actor) {
   if (!user) throw bad('User not found');
   if (!actor || !['owner', 'manager'].includes(actor.role)) throw forbidden();
   if (user.role === 'owner' && actor.role !== 'owner') throw forbidden('Only an owner can reset an owner PIN');
+  requireOwnerFor(actor, user, {}, ['pin']);
   const pin = String(crypto.randomInt(100000, 1000000));
   update('users', id, { pin_hash: hashSecret(pin), updated_at: nowIso() });
   run("DELETE FROM sessions WHERE user_id=? AND kind='app'", id);
   audit(`user:${actor?.id}`, 'user.pin_reset', 'user', id);
+  securityNotice(user, actor, ['pin']);
   return { pin };
 }
 
@@ -88,7 +129,7 @@ function validateUser(data) {
   if (data.email && (typeof data.email !== 'string' || data.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim()))) return 'Enter a valid email';
   if (data.phone && (typeof data.phone !== 'string' || data.phone.length > 32 || !/^\d{11,15}$/.test(normPhone(data.phone) || ''))) return 'Enter a valid phone number';
   if (data.password !== undefined) { try { validatePassword(data.password); } catch (e) { return e.message; } }
-  if (data.pin !== undefined && (typeof data.pin !== 'string' || !/^\d{4,8}$/.test(data.pin))) return 'PIN must be 4–8 digits';
+  if (data.pin !== undefined && (typeof data.pin !== 'string' || !/^\d{6,8}$/.test(data.pin))) return 'PIN must be 6–8 digits';
   for (const field of ['shift_start', 'shift_end']) if (data[field] !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(data[field])) return 'Shift times must use HH:MM';
   if (data.grace_min !== undefined && (!Number.isInteger(Number(data.grace_min)) || Number(data.grace_min) < 0 || Number(data.grace_min) > 240)) return 'Grace period must be 0–240 minutes';
   if (data.daily_visit_cap !== undefined && (!Number.isInteger(Number(data.daily_visit_cap)) || Number(data.daily_visit_cap) < 1 || Number(data.daily_visit_cap) > 20)) return 'Daily visit cap must be 1–20';
@@ -114,7 +155,8 @@ export function allowedPlaces(user, day) {
   return places;
 }
 
-const BLOCKING = ['no_location', 'poor_accuracy', 'outside_geofence', 'sync_too_late', 'device_time_in_future', 'out_without_in'];
+// offline_backdated: the time comes from the phone (sent later), so a person checks it.
+const BLOCKING = ['no_location', 'poor_accuracy', 'outside_geofence', 'sync_too_late', 'device_time_in_future', 'out_without_in', 'offline_backdated'];
 
 export function recordAttendance(userId, ev) {
   if (ev.client_event_id) {
@@ -136,7 +178,9 @@ export function recordAttendance(userId, ev) {
   const acc = ev.accuracy_m === undefined || ev.accuracy_m === null ? null : Number(ev.accuracy_m);
   if ((lat !== null && (!Number.isFinite(lat) || lat < -90 || lat > 90)) || (lng !== null && (!Number.isFinite(lng) || lng < -180 || lng > 180)) || (acc !== null && (!Number.isFinite(acc) || acc < 0))) return { error: 'Invalid GPS coordinates or accuracy' };
   const skewMin = (serverT - deviceT) / 60000;
-  const offline = !!ev.offline || skewMin > cfg.skew_limit_min;
+  // Live check-ins always use the server clock; only queued (offline) items may use
+  // the phone's time, and then a manager reviews anything older than the skew limit.
+  const offline = ev.live ? false : (!!ev.offline || skewMin > cfg.skew_limit_min);
   if (skewMin < -cfg.skew_limit_min) reasons.push('device_time_in_future');
   if (offline && skewMin > cfg.offline_max_h * 60) reasons.push('sync_too_late');
   const effective = offline && !reasons.includes('sync_too_late') ? deviceT : serverT;
@@ -144,7 +188,8 @@ export function recordAttendance(userId, ev) {
   let place = null; let dist = null;
   if (lat === null || lng === null) reasons.push('no_location');
   else {
-    if (acc !== null && acc > cfg.accuracy_limit_m) reasons.push('poor_accuracy');
+    // A missing accuracy value is treated as weak GPS, not as a free 50 m allowance.
+    if (acc === null || acc > cfg.accuracy_limit_m) reasons.push('poor_accuracy');
     const places = allowedPlaces(u, day);
     let preferred = ev.place_type ? places.find((p) => p.type === ev.place_type && (p.id ?? null) === (ev.place_id ?? null)) : null;
     const ranked = places.map((p) => ({ p, d: haversineM(lat, lng, p.lat, p.lng) })).sort((a, b) => a.d - b.d);
@@ -166,6 +211,7 @@ export function recordAttendance(userId, ev) {
   if (ev.kind === 'in' && !lastToday && mins > hmToMin(u.shift_start) + u.grace_min) reasons.push('late');
   if (ev.kind === 'out' && mins < hmToMin(u.shift_end) - 30) reasons.push('early_out');
   if (offline) reasons.push('offline_sync');
+  if (offline && skewMin > cfg.skew_limit_min && !reasons.includes('sync_too_late')) reasons.push('offline_backdated');
   const validation = reasons.some((r) => BLOCKING.includes(r)) ? 'needs_review' : 'accepted';
   const id = insert('attendance_events', {
     user_id: userId, kind: ev.kind, device_time: deviceT.toISOString(), server_time: serverT.toISOString(), effective_time: effective.toISOString(),
@@ -184,7 +230,7 @@ export function recordAttendance(userId, ev) {
 }
 
 export function reasonText(r) {
-  return ({ no_location: 'no GPS location', poor_accuracy: 'weak GPS accuracy', outside_geofence: 'outside office/site area', sync_too_late: 'synced too late', device_time_in_future: 'phone clock is wrong', out_without_in: 'check-out without check-in', already_checked_in: 'already checked in', late: 'late', early_out: 'left early', offline_sync: 'recorded offline', missing_checkout: 'forgot to check out' })[r] || r;
+  return ({ no_location: 'no GPS location', poor_accuracy: 'weak GPS accuracy', outside_geofence: 'outside office/site area', sync_too_late: 'synced too late', device_time_in_future: 'phone clock is wrong', out_without_in: 'check-out without check-in', already_checked_in: 'already checked in', late: 'late', early_out: 'left early', offline_sync: 'recorded offline', offline_backdated: 'time taken from the phone (sent later)', missing_checkout: 'forgot to check out' })[r] || r;
 }
 
 /** Manager review: approve (optionally with corrected time) or reject. Originals are kept. */
@@ -372,15 +418,19 @@ export function decideLeave(approvalId, { decision, note }, actor) {
 
 // ---------- expenses ----------
 export function submitExpense(userId, { category, amount, claim_date, project_id, description, receipt_media_id }) {
-  const amt = Number(amount);
-  if (!['travel', 'fuel', 'material', 'food', 'tools', 'other'].includes(category) || !Number.isFinite(amt) || !(amt > 0) || amt > 100000000) return { error: 'Choose a valid category and finite positive amount' };
+  if (!['travel', 'fuel', 'material', 'food', 'tools', 'other'].includes(category)) return { error: 'Choose a valid category' };
+  let amt;
+  try { amt = paise(amount, { min: 0.01, max: 1000000 }) / 100; } catch { return { error: 'Enter an amount between ₹0.01 and ₹10,00,000 with at most two decimals' }; }
   if (claim_date && !validDay(claim_date)) return { error: 'Choose a valid claim date' };
+  // Claims belong to recent work: not in the future, not older than 90 days (payroll months stay closed).
+  if (claim_date && (claim_date > istDate() || claim_date < addDays(istDate(), -90))) return { error: 'The claim date must be within the last 90 days' };
   if (description && (typeof description !== 'string' || description.length > 4000)) return { error: 'Description must be at most 4,000 characters' };
   const u = getUser(userId);
   if (!u || !u.active) return { error: 'User inactive' };
   if (project_id && !DASHBOARD_ROLES.includes(u.role) && !one('SELECT 1 FROM projects WHERE id=? AND (manager_id=? OR architect_id=? OR engineer_id=? OR supervisor_id=?)', project_id, userId, userId, userId, userId)) return { error: 'Not your project' };
   const id = insert('expense_claims', { user_id: userId, category, amount: amt, claim_date: claim_date || istDate(), project_id: project_id || null, description: description || null, receipt_media_id: receipt_media_id || null, status: 'pending_manager', created_at: nowIso() });
-  if (receipt_media_id) run("UPDATE media SET owner_type='expense', owner_id=? WHERE id=?", id, receipt_media_id);
+  // Only a receipt this person just uploaded can be attached to the claim.
+  if (receipt_media_id) run("UPDATE media SET owner_type='expense', owner_id=? WHERE id=? AND uploaded_by=? AND owner_type='expense' AND owner_id=0", id, receipt_media_id, `user:${userId}`);
   createApproval('expense', 'expense', id, `Expense · ${u.name} · ${inr(amt)}`, `${category}${description ? ' · ' + description : ''}`, { userId, stage: 'manager' });
   audit(`user:${userId}`, 'expense.submitted', 'expense', id);
   return { ok: true, id };

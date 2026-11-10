@@ -7,6 +7,8 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { toCloudPayload } from './format.js';
 
+// Largest WhatsApp attachment the system stores (videos/documents above this stay in the chat only).
+export const MAX_INBOUND_MEDIA = 25 * 1024 * 1024;
 const TRANSIENT = new Set([1, 2, 4, 17, 80007, 130429, 131000, 131016, 131056, 133004, 131057]);
 const WINDOW = new Set([131047, 470]);
 
@@ -56,13 +58,16 @@ function cloudLike({ name, messagesUrl, mediaBase, headers }) {
       } catch { /* not important */ }
     },
     async downloadMedia(mediaId) {
-      const meta = await timedFetch(`${mediaBase()}/${mediaId}`, { headers: headers() }, 15000);
+      if (!/^[A-Za-z0-9._-]{1,200}$/.test(String(mediaId))) throw new Error('Invalid media id');
+      const meta = await timedFetch(`${mediaBase()}/${encodeURIComponent(mediaId)}`, { headers: headers() }, 15000);
       if (!meta.ok) throw new Error(`Media lookup failed (${meta.status})`);
       const info = await meta.json();
+      if (Number(info.file_size) > MAX_INBOUND_MEDIA) throw new Error('Media too large to store');
       let url = info.url;
       if (name === 'dialog360' && url) { const u = new URL(url); url = `${config.whatsapp.dialogBase}${u.pathname}${u.search}`; }
       const file = await timedFetch(url, { headers: headers() }, 30000);
       if (!file.ok) throw new Error(`Media download failed (${file.status})`);
+      if (Number(file.headers.get('content-length')) > MAX_INBOUND_MEDIA) throw new Error('Media too large to store');
       return { buffer: Buffer.from(await file.arrayBuffer()), mime: info.mime_type || file.headers.get('content-type') || 'application/octet-stream' };
     },
   };

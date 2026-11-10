@@ -36,10 +36,33 @@ export function listApprovals({ status = 'pending', kind } = {}) {
   });
 }
 
+/**
+ * Nobody approves their own expense, leave or attendance exception (the owner is
+ * the only exception), and an expense needs a manager and then a different person
+ * from finance: one person cannot submit, approve and pay a claim alone.
+ */
+function separationOfDuties(a, actor) {
+  if (!actor || actor.role === 'owner') return null;
+  const data = jparse(a.data, {});
+  if (['expense', 'leave', 'attendance_exception'].includes(a.kind) && Number(data.userId) === actor.id) return 'You cannot decide your own request. Ask the owner or another manager.';
+  if (a.kind === 'expense') {
+    const stage = data.stage || 'manager';
+    if (stage === 'manager' && actor.role !== 'manager') return 'A manager approves this stage; finance checks it next.';
+    if (stage === 'finance') {
+      if (actor.role !== 'finance') return 'Finance does this check after the manager.';
+      const claim = one('SELECT manager_id FROM expense_claims WHERE id=?', a.entity_id);
+      if (claim?.manager_id === actor.id) return 'A different person must do the finance check.';
+    }
+  }
+  return null;
+}
+
 export function decideApproval(id, body, actor) {
   return tx(() => {
     const a = one('SELECT * FROM approvals WHERE id=?', id);
     if (!a) return { error: 'Approval not found' };
+    const blocked = separationOfDuties(a, actor);
+    if (blocked) return { error: blocked };
     switch (a.kind) {
       case 'lead_assignment':
       case 'lead_review': return decideLead(id, body, actor);

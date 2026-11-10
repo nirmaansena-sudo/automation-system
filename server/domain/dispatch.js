@@ -2,7 +2,7 @@
 // availability and travel distance always take precedence over a cell owner.
 import { latLngToCell, cellToLatLng, cellToBoundary, polygonToCells, gridDisk, isValidCell } from 'h3-js';
 import { all, one, run, tx } from '../db/index.js';
-import { getSettings, saveSettings, audit } from '../core/base.js';
+import { getSettings, saveSettings, audit, notify } from '../core/base.js';
 import { nowIso, haversineM, jparse } from '../lib/util.js';
 import { bad, notFound } from '../lib/http.js';
 
@@ -61,9 +61,19 @@ export function setLocationProfile(userId, data, actor) {
   const cleared = [p.home_lat, p.home_lng].every(v => v === null || v === '');
   if (!cleared && !pointOK(p.home_lat, p.home_lng)) throw bad('Enter a valid home latitude and longitude');
   if (p.default_origin === 'home' && cleared) throw bad('Save a home pin first');
+  const newLat = cleared ? null : Number(p.home_lat), newLng = cleared ? null : Number(p.home_lng);
+  const moved = newLat !== old.home_lat || newLng !== old.home_lng;
+  // Distance the pin moved (kilometres only; the coordinates stay private).
+  const movedKm = moved && newLat !== null && pointOK(old.home_lat, old.home_lng) ? Math.round(haversineM(old.home_lat, old.home_lng, newLat, newLng) / 100) / 10 : null;
   return tx(() => {
-    run('INSERT INTO architect_locations(user_id,home_lat,home_lng,home_label,default_origin,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET home_lat=excluded.home_lat,home_lng=excluded.home_lng,home_label=excluded.home_label,default_origin=excluded.default_origin,updated_at=excluded.updated_at', userId, cleared ? null : Number(p.home_lat), cleared ? null : Number(p.home_lng), String(p.home_label || '').slice(0, 120), p.default_origin, nowIso());
-    audit(actor, 'travel.origin_updated', 'user', userId, { default_origin: p.default_origin, home_pin_set: !cleared });
+    const at = nowIso();
+    run('INSERT INTO architect_locations(user_id,home_lat,home_lng,home_label,default_origin,updated_at,home_changed_at,home_moved_km,home_changed_by) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET home_lat=excluded.home_lat,home_lng=excluded.home_lng,home_label=excluded.home_label,default_origin=excluded.default_origin,updated_at=excluded.updated_at,home_changed_at=excluded.home_changed_at,home_moved_km=excluded.home_moved_km,home_changed_by=excluded.home_changed_by',
+      userId, newLat, newLng, String(p.home_label || '').slice(0, 120), p.default_origin, at, moved ? at : (old.home_changed_at ?? null), moved ? movedKm : (old.home_moved_km ?? null), moved ? actor : (old.home_changed_by ?? null));
+    audit(actor, 'travel.origin_updated', 'user', userId, { default_origin: p.default_origin, home_pin_set: !cleared, home_pin_moved: moved, moved_km: movedKm, first_pin: moved && !pointOK(old.home_lat, old.home_lng) });
+    if (moved && actor === `user:${userId}`) {
+      const who = one('SELECT name FROM users WHERE id=?', userId)?.name || `user ${userId}`;
+      notify({ audience: 'managers', title: `Home pin changed · ${who}`, body: movedKm === null ? (newLat === null ? 'Home pin removed' : 'Home pin set for the first time') : `Moved ${movedKm} km. Travel from home is flagged for 30 days.`, link: '#/travel', level: 'warn' });
+    }
     territoryMemo = null;
     return locationProfile(userId);
   });

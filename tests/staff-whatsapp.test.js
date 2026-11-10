@@ -158,7 +158,7 @@ test('home and office travel estimates require confirmation, manager approval an
   await click(`W:TO:${v.id}:home`); assert.equal(travel.readTravel(v.id, staff), null);
   await click('W:SAVE:'); let current = travel.readTravel(v.id, staff); assert.equal(current.origin_type, 'home'); assert.equal(current.status, 'proposed');
   await h.press(staff.phone, `W:CL:${v.id}`); assert.match(h.last(staff.phone).body, /manager approval/);
-  travel.approveTravel(v.id, owner, { expected_revision: current.revision, verified_distance_km: 30, note: 'Verified real route' });
+  travel.approveTravel(v.id, owner, { ack_home_change: true, expected_revision: current.revision, verified_distance_km: 30, note: 'Verified real route' });
   await h.press(staff.phone, `W:CL:${v.id}`); assert.equal(h.db.one('SELECT COUNT(*) n FROM expense_claims WHERE user_id=?', staff.id).n, 0);
   const d = draft(); await click('W:SAVE:'); current = travel.readTravel(v.id, staff);
   assert.ok(current.expense_id); assert.equal(h.db.one('SELECT amount FROM expense_claims WHERE id=?', current.expense_id).amount, 200);

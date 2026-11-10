@@ -107,6 +107,8 @@ Meta needs a public HTTPS address. A free Cloudflare quick tunnel gives one for 
 3. It prints an address like `https://quiet-river-1234.trycloudflare.com`. Put it in `.env` as `PUBLIC_URL`,
    restart the system, and use `https://quiet-river-1234.trycloudflare.com/webhooks/whatsapp` as the callback URL in Meta.
 4. Because `PUBLIC_URL` is now public, the first-time setup asks for the **setup code** printed in the system window.
+5. Add `TRUSTED_PROXY_IPS=127.0.0.1` to `.env`: the tunnel delivers every request from this PC, and the system
+   needs the visitor's real address for login limits and the audit log (the health panel warns if it is missing).
 
 The quick-tunnel address changes every time you start it (update Meta and `.env` each time), and messages only
 flow while the PC is on and awake. For anything longer than testing, move to a server ([GO-LIVE.md](GO-LIVE.md)).

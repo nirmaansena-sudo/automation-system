@@ -5,7 +5,7 @@ import path from 'node:path';
 import { config } from './config.js';
 import { openDb } from './db/index.js';
 import { Router, createServer, serveStatic, HttpError } from './lib/http.js';
-import { sessionUser, requireRoles } from './lib/auth.js';
+import { sessionUser, requireRoles, DASHBOARD_ROLES } from './lib/auth.js';
 import { safeEqual, nowIso } from './lib/util.js';
 import { seedBase, seedDemo } from './seed/seed.js';
 import { getSettings, setState } from './core/base.js';
@@ -70,6 +70,10 @@ export function buildServer() {
     }
     const kind = auth === 'optional' || auth === 'any' ? 'any' : auth;
     ctx.user = sessionUser(ctx, kind);
+    // An employee-app login uses a phone + PIN. Even for an owner, manager or finance
+    // person it only gives employee rights (their own visits, sites, tasks, photos);
+    // everything else needs the dashboard login with password and two-step code.
+    if (ctx.user && ctx.sessionKind === 'app' && DASHBOARD_ROLES.includes(ctx.user.role)) ctx.user = { ...ctx.user, role: 'staff', dashboard_role: ctx.user.role };
     if (auth === 'optional') return;
     requireRoles(ctx.user, opts.roles);
     // CSRF protection for cookie sessions: our pages always send this header.

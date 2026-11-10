@@ -1,6 +1,9 @@
 // Scheduled routines. Each run has a run key per period, so triggering the
 // same routine twice (n8n + backend fallback, or a double click) never runs it twice.
+import fs from 'node:fs';
+import path from 'node:path';
 import { all, one, run, insert, update, tx } from '../db/index.js';
+import { proxyWarning } from '../lib/http.js';
 import { now, nowIso, addMinIso, istDate, istParts, addDays, hmToMin, truncate, inr, fmtDateLong, jparse } from '../lib/util.js';
 import { config } from '../config.js';
 import { audit, notify, createTask, setting, setState, getState } from './base.js';
@@ -226,6 +229,11 @@ export function healthReport() {
   const started = getState('server_started')?.value;
   if (ageMin(lastBackup?.at) > 36 * 60 && ageMin(started) > 60) warnings.push('No database backup in the last 36 hours');
   if (config.routinesMode === 'n8n' && ageMin(getState('n8n_last_seen')?.value) > 30 && ageMin(started) > 30) warnings.push('n8n not seen for 30+ minutes (the backend is running the routines itself)');
+  const demoAccounts = one("SELECT COUNT(*) n FROM users WHERE active=1 AND email LIKE '%@demo.local'").n;
+  if (demoAccounts && (config.whatsapp.provider !== 'simulator' || config.publicUrl.startsWith('https://'))) warnings.push(`${demoAccounts} demo account(s) with published passwords are active on a live system. Deactivate them in Team.`);
+  const proxy = proxyWarning();
+  if (proxy) warnings.push(`Requests come through a proxy (${proxy.remote}) that is not in TRUSTED_PROXY_IPS: every user shares one address for login limits and the audit log. Set TRUSTED_PROXY_IPS (see docs/GO-LIVE.md).`);
+  if (!config.backupPassword && fs.existsSync(path.join(config.dataDir, 'backup.key')) && !getState('backup_key_downloaded')) warnings.push('Download the backup key (Database → Backups) and keep it off this computer. Without it, backup copies cannot be restored if this computer or server is lost.');
   return {
     ok: warnings.length === 0, at: nowIso(), warnings, outbox: ob, inbound: { stuck, failed24h: failedIn },
     lastWebhook: getState('webhook_last_received')?.value || null, n8nLastSeen: getState('n8n_last_seen')?.value || null,
