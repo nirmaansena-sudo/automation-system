@@ -93,6 +93,24 @@ recovering from a suspected compromise.
 Practice this on an isolated machine with workers disabled and WhatsApp set to
 simulator before relying on it for an emergency.
 
+## Owner locked out
+
+If the owner forgets the dashboard password (or loses both the authenticator phone and the
+recovery codes), reset it on the machine that holds the data. Nobody can do this over the internet.
+
+```sh
+# Windows PC, in the nirmaan-sena-system folder
+node scripts\reset-owner-password.js owner@example.com
+
+# Server (Docker), in /opt/nirmaan
+docker compose exec app node scripts/reset-owner-password.js owner@example.com
+```
+
+It prints a one-time temporary password, signs the owner out everywhere and records the reset in the
+audit history. Add `--disable-mfa` only when the authenticator and the recovery codes are both lost.
+Sign in, then change the password (and set up two-step verification again) under *My security*.
+The script refuses any account that is not the owner and changes nothing if the data folder is wrong.
+
 ## n8n integration delivery
 
 Business-event webhooks now respond after enabled workflow steps finish. Errors

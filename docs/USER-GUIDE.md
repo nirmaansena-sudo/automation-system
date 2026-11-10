@@ -155,4 +155,5 @@ to pick a new time.
 | Bot gave a wrong answer | *Settings → FAQ answers* — fix the answer or its keywords |
 | Someone's check-in shows *needs review* | *Approvals → attendance* — it is evidence, decide with the photo/location |
 | A daily update or reminder did not go | *Settings → Routines* — last run and result; *Run now* |
+| Owner forgot the password or lost the authenticator | Run `scripts/reset-owner-password.js` where the data lives — see [RECOVERY.md](RECOVERY.md#owner-locked-out) |
 | Anything red in *System health* | *Settings → Connections*; see [GO-LIVE.md §9](GO-LIVE.md#9-monitoring) |
