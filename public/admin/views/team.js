@@ -86,7 +86,7 @@ async function personForm(u = {}) {
     <div class="field full"><span>Weekly off</span><div class="checks">${days.map((dd, i) => html`<label class="check"><input type="checkbox" name="weekly_off" data-multi="1" value="${i}" ${(u.weekly_off || [0]).includes(i) ? 'checked' : ''}> ${dd}</label>`)}</div></div>
     <div class="field full"><span>Zones (architects/engineers — leave empty for all)</span><div class="checks">${zones.map((z) => html`<label class="check"><input type="checkbox" name="zones" data-multi="1" value="${z.code}" ${(u.zones || []).includes(z.code) ? 'checked' : ''}> ${z.name}</label>`)}</div></div>
     <div class="field full"><span>Skills (services this person can visit for — empty means all)</span><div class="checks">${services.map((s) => html`<label class="check"><input type="checkbox" name="skills" data-multi="1" value="${s.code}" ${(u.skills || []).includes(s.code) ? 'checked' : ''}> ${s.en}</label>`)}</div></div>
-    ${u.id ? html`<label class="check full"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Active (unticking logs them out and stops new visits)</label>` : ''}</div>`;
+    ${u.id ? html`<label class="check full"><input type="checkbox" name="active" ${lock} ${u.active ? 'checked' : ''}> Active (unticking logs them out and stops new visits)</label>` : ''}</div>`;
 }
 const clean = (f) => ({ ...f, weekly_off: (f.weekly_off || []).map(Number), grace_min: Number(f.grace_min), daily_visit_cap: Number(f.daily_visit_cap), password: f.password || undefined, email: f.email || null, phone: f.phone || null });
 

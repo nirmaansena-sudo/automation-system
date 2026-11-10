@@ -163,6 +163,7 @@ input, select, textarea { font: inherit; color: var(--ink); background: var(--su
 textarea { resize: vertical; min-height: 70px; }
 input[type=checkbox], input[type=radio] { width: auto; accent-color: var(--brand); }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus); outline-offset: -1px; border-color: transparent; }
+input:disabled, select:disabled, textarea:disabled { background: var(--surface-2); color: var(--muted); cursor: not-allowed; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .form-grid .full { grid-column: 1 / -1; }
 @media (max-width: 600px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
