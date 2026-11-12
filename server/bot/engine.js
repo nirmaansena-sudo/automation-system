@@ -811,6 +811,7 @@ function handleEcho(e) {
 function handleWebsiteForm(f) {
   const waId = normPhone(f.whatsapp || f.whatsapp_number || f.mobile || f.mobile_number);
   if (!waId || waId.length < 11) throw new Error('Website form without a valid phone number');
+  if (/^NS-JPR-\d{4}-\d{3,6}$/.test(String(f.reference_id || '')) && one("SELECT 1 FROM leads WHERE ref=? AND source='website'", f.reference_id)) return; // already received
   const c = ensureContact(waId, { name: f.name || f.full_name });
   run('UPDATE contacts SET consent_at=COALESCE(consent_at, ?), name=COALESCE(name, ?) WHERE id=?', f.consent === false ? null : nowIso(), f.name || f.full_name || null, c.id);
   const zones = zonesWithKw();

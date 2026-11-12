@@ -12,7 +12,7 @@ import { kickDispatcher } from '../core/outbox.js';
 import { runRoutine, healthReport, ROUTINES } from '../core/routines.js';
 import { loginDashboard, loginApp, logout, createSession, DASHBOARD_ROLES, reauthenticate, revokeSessions, validatePassword } from '../lib/auth.js';
 import { mfaStatus, beginMfa, enableMfa, disableMfa } from '../lib/mfa.js';
-import { verifySubscription, verifySignature, ingest, ingestWebsiteForm, fakeWebhook } from '../whatsapp/webhook.js';
+import { verifySubscription, verifySignature, ingest, ingestWebsiteForm, fakeWebhook, cleanWebsiteForm } from '../whatsapp/webhook.js';
 import { kickInbound, drain } from '../core/workers.js';
 import { quotePage, projectPage, visitPage } from '../pages/public-pages.js';
 import { seedDemo } from '../seed/seed.js';
@@ -145,11 +145,10 @@ export function registerPublic(r) {
     // Header only: a secret in the URL ends up in proxy and browser logs.
     const secret = ctx.req.headers['x-website-secret'];
     if (!secret || !safeEqual(secret, config.websiteSecret)) throw new HttpError(401, 'Bad secret');
-    const b = ctx.body || {};
-    if (!b.mobile && !b.whatsapp) throw bad('mobile or whatsapp is required');
-    const res = tx(() => ingestWebsiteForm({ ...b, submitted_at: b.submitted_at || nowIso() }));
+    const form = cleanWebsiteForm(ctx.body || {});
+    const res = tx(() => ingestWebsiteForm(form));
     kickInbound();
-    return { ok: true, ...res };
+    return { ok: true, ...res, duplicate: res.stored === 0 };
   });
 
   // ---------------- private pages and media
@@ -232,7 +231,7 @@ export function registerPublic(r) {
   });
   r.post('/api/sim/website-form', S, async (ctx) => {
     simOnly();
-    const res = tx(() => ingestWebsiteForm({ ...(ctx.body || {}), submitted_at: nowIso() }));
+    const res = tx(() => ingestWebsiteForm(cleanWebsiteForm({ ...(ctx.body || {}), submitted_at: nowIso() })));
     await drain(20);
     return { ok: true, ...res };
   });

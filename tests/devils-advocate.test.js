@@ -325,6 +325,25 @@ test('bad input gets a clear answer instead of a server error', async () => {
   assert.equal(h.db.one('SELECT priority FROM leads WHERE id=?', made.body.id).priority, 'high');
 });
 
+test('website enquiries: a bad number is refused at once and a repeated post is one enquiry', async () => {
+  const secret = JSON.parse(fs.readFileSync(path.join(h.dir, 'secrets.json'), 'utf8')).websiteSecret;
+  const post = async (body) => { const r = await fetch(`${h.base}/api/public/website-enquiry`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-website-secret': secret }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };
+  const failedBefore = h.db.one("SELECT COUNT(*) n FROM inbound_events WHERE kind='form'").n;
+  for (const mobile of ['12345', 'not a number', { a: 1 }, '']) {
+    const r = await post({ reference_id: 'NS-JPR-2026-7001', name: 'Bad Phone', mobile });
+    assert.equal(r.status, 400, JSON.stringify(r.body)); assert.match(r.body.error, /valid mobile/);
+  }
+  assert.equal(h.db.one("SELECT COUNT(*) n FROM inbound_events WHERE kind='form'").n, failedBefore, 'nothing is queued to fail later');
+  const form = { reference_id: 'NS-JPR-2026-7002', name: 'Web Visitor', mobile: '97001 00060', services: ['Turnkey construction'], locality: 'Vaishali Nagar', area: '150 gaj', consent: true };
+  const first = await post(form); await h.drain();
+  assert.equal(first.status, 200); assert.equal(first.body.stored, 1);
+  const again = await post({ ...form, submitted_at: '2026-11-12T10:00:00Z' }); await h.drain();
+  assert.equal(again.status, 200); assert.equal(again.body.duplicate, true, 'the website can retry safely');
+  assert.equal(h.db.one("SELECT COUNT(*) n FROM leads WHERE phone='919700100060'").n, 1, 'one lead');
+  assert.equal(h.db.one("SELECT ref FROM leads WHERE phone='919700100060'").ref, 'NS-JPR-2026-7002');
+  assert.equal(h.outbound('919700100060').filter((m) => /7002/.test(m.body || '')).length, 1, 'the client is greeted once');
+});
+
 test('the safety net explains database refusals in plain words', async () => {
   const http = await import('../server/lib/http.js');
   assert.match(http.constraintMessage(new Error('FOREIGN KEY constraint failed')), /no longer exists/);

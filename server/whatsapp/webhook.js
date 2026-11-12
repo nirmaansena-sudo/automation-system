@@ -5,6 +5,7 @@ import { run, tx } from '../db/index.js';
 import { nowIso, safeEqual } from '../lib/util.js';
 import { config } from '../config.js';
 import { setState } from '../core/base.js';
+import { HttpError } from '../lib/http.js';
 
 export function verifySubscription(query) {
   if (query['hub.mode'] === 'subscribe' && query['hub.verify_token'] && config.whatsapp.verifyToken && safeEqual(String(query['hub.verify_token']), config.whatsapp.verifyToken)) return query['hub.challenge'];
@@ -99,8 +100,29 @@ export function ingest(body, provider = config.whatsapp.provider) {
 }
 
 /** Website enquiry form (already OTP-verified on the website). */
+/**
+ * Check and tidy a website enquiry at the door, so the website gets the answer
+ * straight away instead of the enquiry failing quietly a moment later.
+ */
+export function cleanWebsiteForm(b = {}) {
+  const s = (v, max) => (typeof v === 'string' || typeof v === 'number' ? String(v).trim().slice(0, max) : '');
+  const digits = String(s(b.whatsapp || b.whatsapp_number || b.mobile || b.mobile_number, 30)).replace(/\D/g, '').replace(/^00/, '');
+  const phone = digits.length === 10 ? `91${digits}` : digits.length === 11 && digits.startsWith('0') ? `91${digits.slice(1)}` : digits;
+  if (!/^\d{11,15}$/.test(phone)) throw new HttpError(400, 'Send a valid mobile or WhatsApp number (10 digits)');
+  const services = Array.isArray(b.services) ? b.services.filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 80)).slice(0, 12) : s(b.services, 300);
+  return {
+    reference_id: s(b.reference_id || b.reference, 40) || undefined, name: s(b.name || b.full_name, 120) || undefined,
+    mobile: phone, whatsapp: phone, services, project_nature: s(b.project_nature, 80), locality: s(b.locality, 120),
+    area: s(b.area || b.area_sqft, 60), execution_window: s(b.execution_window, 80), requirements: s(b.requirements || b.notes, 2000) || undefined,
+    consent: b.consent !== false, submitted_at: s(b.submitted_at, 40) || nowIso(),
+  };
+}
+
 export function ingestWebsiteForm(form) {
-  const key = `form:${form.reference_id || form.reference || ''}:${form.mobile || form.whatsapp || ''}:${form.submitted_at || ''}`;
+  // The website's own reference identifies the enquiry: a repeated post (retry, double click)
+  // is stored once. Without a reference, the same number at the same moment is one enquiry.
+  const reference = form.reference_id || form.reference || '';
+  const key = reference ? `form:${reference}` : `form::${form.mobile || form.whatsapp || ''}:${form.submitted_at || ''}`;
   const r = run('INSERT OR IGNORE INTO inbound_events(provider, kind, dedupe_key, wa_id, payload, status, received_at) VALUES (?,?,?,?,?,?,?)', 'website', 'form', key, null, JSON.stringify(form), 'pending', nowIso());
   return { stored: r.changes };
 }
