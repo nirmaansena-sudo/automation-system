@@ -5,7 +5,7 @@ import path from 'node:path';
 import { all, one, run, insert, update, tx } from '../db/index.js';
 import { proxyWarning } from '../lib/http.js';
 import { now, nowIso, addMinIso, istDate, istParts, addDays, hmToMin, truncate, inr, fmtDateLong, jparse } from '../lib/util.js';
-import { config } from '../config.js';
+import { config, configProblems } from '../config.js';
 import { audit, notify, createTask, setting, setState, getState } from './base.js';
 import { enqueueWhatsApp, enqueueEvent, outboxHealth } from './outbox.js';
 import { t } from '../bot/i18n.js';
@@ -189,13 +189,30 @@ function monthly() {
   return { month: s.month, people: s.rows.length, approval: id };
 }
 
+/**
+ * The 9 pm check-out sweep is skipped when the computer is off at that time. Run it for
+ * yesterday on the next morning instead, so forgotten check-outs still reach a manager
+ * and payroll hours are not silently wrong. Safe to repeat: closed sessions are left alone.
+ */
+function catchUpEveningSweep() {
+  const yesterday = addDays(istDate(), -1);
+  const key = `attendance-evening:${yesterday}`;
+  if (one("SELECT 1 FROM routine_runs WHERE run_key=? AND status='done'", key)) return 0;
+  const started = nowIso();
+  const result = attendanceEveningSweep(yesterday);
+  run(`INSERT INTO routine_runs(routine, run_key, trigger, status, started_at, finished_at, attempts, result) VALUES ('attendance-evening', ?, 'catch-up', 'done', ?, ?, 1, ?)
+       ON CONFLICT(run_key) DO UPDATE SET status='done', trigger='catch-up', finished_at=excluded.finished_at, result=excluded.result, next_attempt_at=NULL`, key, started, nowIso(), JSON.stringify({ ...result, caughtUp: true }));
+  return result.closed;
+}
+
 function housekeeping() {
   const at = nowIso();
   const sessions = run('DELETE FROM sessions WHERE expires_at < ?', new Date().toISOString()).changes;
   const holds = run("UPDATE calendar_holds SET status='expired' WHERE status='active' AND expires_at IS NOT NULL AND expires_at < ?", at).changes;
   const stuck = run("UPDATE inbound_events SET status='pending' WHERE status='processing' AND locked_at < ?", addMinIso(at, -10)).changes;
   const oldNotif = run('DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?', addMinIso(at, -60 * 24 * 60)).changes;
-  return { sessions, holds, stuck, oldNotif };
+  const lateCheckouts = catchUpEveningSweep();
+  return { sessions, holds, stuck, oldNotif, lateCheckouts };
 }
 
 /** Health summary used by the dashboard and the n8n watchdog. */
@@ -231,6 +248,10 @@ export function healthReport() {
   if (config.routinesMode === 'n8n' && ageMin(getState('n8n_last_seen')?.value) > 30 && ageMin(started) > 30) warnings.push('n8n not seen for 30+ minutes (the backend is running the routines itself)');
   const demoAccounts = one("SELECT COUNT(*) n FROM users WHERE active=1 AND email LIKE '%@demo.local'").n;
   if (demoAccounts && (config.whatsapp.provider !== 'simulator' || config.publicUrl.startsWith('https://'))) warnings.push(`${demoAccounts} demo account(s) with published passwords are active on a live system. Deactivate them in Team.`);
+  for (const w of configProblems().warnings) warnings.push(w);
+  const oops = getState('last_unexpected_error')?.value;
+  if (oops && ageMin(oops.at) < 1440) warnings.push(`An unexpected error was logged ${Math.round(ageMin(oops.at)) < 60 ? `${Math.max(1, Math.round(ageMin(oops.at)))} min` : `${Math.round(ageMin(oops.at) / 60)} h`} ago${oops.restarted ? ' and the system restarted itself' : ''}: ${oops.message}`);
+  for (const [key, what] of [['inbound_restarted', 'Incoming'], ['outbox_restarted', 'Outgoing']]) { const at = getState(key)?.value; if (at && ageMin(at) < 1440) warnings.push(`${what} message handling got stuck and was restarted automatically in the last 24 h. If it repeats, check the internet connection.`); }
   const proxy = proxyWarning();
   if (proxy) warnings.push(`Requests come through a proxy (${proxy.remote}) that is not in TRUSTED_PROXY_IPS: every user shares one address for login limits and the audit log. Set TRUSTED_PROXY_IPS (see docs/GO-LIVE.md).`);
   if (!config.backupPassword && fs.existsSync(path.join(config.dataDir, 'backup.key')) && !getState('backup_key_downloaded')) warnings.push('Download the backup key (Database → Backups) and keep it off this computer. Without it, backup copies cannot be restored if this computer or server is lost.');

@@ -2,7 +2,7 @@
 import { all, one, run, tx } from '../db/index.js';
 import { jparse, nowIso } from '../lib/util.js';
 import { audit } from '../core/base.js';
-import { decideLead, getLead, suggestAssignment } from './leads.js';
+import { decideLead, getLead, suggestAssignment, pinWarning } from './leads.js';
 import { servicesText, natureText, areaText, leadPlace } from './common.js';
 import { decideVisitReport } from './visits.js';
 import { decideQuotation, getQuote } from './quotations.js';
@@ -23,8 +23,10 @@ export function listApprovals({ status = 'pending', kind } = {}) {
     if (a.kind === 'lead_assignment' && a.entity_type === 'lead' && a.status === 'pending') {
       const lead = getLead(a.entity_id);
       out.lead = lead;
-      out.leadText = lead ? { services: servicesText(lead.services), nature: natureText(lead), area: areaText(lead), place: leadPlace(lead) } : null;
-      out.data.suggestion = suggestAssignment(lead) || out.data.suggestion || null;
+      out.leadText = lead ? { services: servicesText(lead.services), nature: natureText(lead), area: areaText(lead), place: leadPlace(lead), pinWarning: pinWarning(lead) } : null;
+      // One odd record must never take the whole approvals page down.
+      try { out.data.suggestion = (lead && suggestAssignment(lead)) || out.data.suggestion || null; }
+      catch (e) { console.error(`approval ${a.id}: could not suggest an architect`, e.message); out.data.suggestion = null; }
     }
     if (a.kind === 'visit_report') {
       const v = one('SELECT * FROM visits WHERE id=?', a.entity_id);

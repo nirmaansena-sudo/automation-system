@@ -1,6 +1,6 @@
 // Base data (zones, FAQs from nirmaansena.com, templates) and optional demo data.
 import { all, one, run, insert, tx } from '../db/index.js';
-import { now, nowIso, addMinIso, istDate, addDays, fromIst, hashSecret, randomToken } from '../lib/util.js';
+import { now, nowIso, addMinIso, istDate, addDays, fromIst, hashSecret, randomToken, dayOfWeek } from '../lib/util.js';
 import { ZONES_DEFAULT } from '../bot/catalog.js';
 import { seedTemplates } from '../whatsapp/templates.js';
 import { nextRef } from '../core/base.js';
@@ -75,12 +75,14 @@ export function seedDemo() {
     for (const [d, work, labour, progress] of logs) insert('site_logs', { project_id: pid, user_id: suresh, log_date: addDays(istDate(), d), work_done: work, labour: JSON.stringify(labour), milestone_id: msIds[2], progress, lat: 26.90895, lng: 75.73425, distance_m: 6, client_visible: 1, created_at: addMinIso(at, d * 1440 - 60), device_time: addMinIso(at, d * 1440 - 60) });
 
     // Lead awaiting approval (Sunita, Hindi, Mansarovar)
-    const slot = fromIst(addDays(istDate(), 1), '12:00').toISOString();
+    // The demo team is off on Sundays: use the next working day so the sample approval can be approved.
+    let demoDay = addDays(istDate(), 1); if (dayOfWeek(demoDay) === 0) demoDay = addDays(demoDay, 1);
+    const slot = fromIst(demoDay, '12:00').toISOString();
     const leadB = insert('leads', { ref: nextRef('NS-JPR'), contact_id: sunita.id, source: 'whatsapp', status: 'awaiting_approval', name: 'Sunita Agarwal', phone: sunita.wa_id, zone: 'mansarovar', locality: 'Shipra Path', address: 'Near Shipra Path, Mansarovar', site_lat: 26.8530, site_lng: 75.7690, location_source: 'pin', services: JSON.stringify(['interiors']), project_nature: 'apartment_interior', area_sqft: 1450, area_text: '1450 sq ft', execution_window: 'within_15_days', preferred_slots: JSON.stringify([slot]), requirements: '3 BHK flat — modular kitchen and wardrobes', consent: 1, created_at: addMinIso(at, -25), updated_at: addMinIso(at, -20), submitted_at: addMinIso(at, -20), first_response_at: addMinIso(at, -20) });
     insert('approvals', { kind: 'lead_assignment', entity_type: 'lead', entity_id: leadB, title: `Approve visit · ${one('SELECT ref FROM leads WHERE id=?', leadB).ref} · Sunita Agarwal`, summary: 'Interiors · Flat interior · 1,450 sq ft · Shipra Path, Mansarovar', data: '{}', status: 'pending', requested_by: 'system', due_at: addMinIso(at, 10), created_at: addMinIso(at, -20) });
 
     // Confirmed visit tomorrow (Rohit, Ajmer Road) with Rahul
-    const vStart = fromIst(addDays(istDate(), 1), '15:00'); const vEnd = new Date(vStart.getTime() + 3600e3);
+    const vStart = fromIst(demoDay, '15:00'); const vEnd = new Date(vStart.getTime() + 3600e3);
     const leadC = insert('leads', { ref: nextRef('NS-JPR'), contact_id: rohit.id, source: 'website', status: 'visit_confirmed', name: 'Rohit Khandelwal', phone: rohit.wa_id, zone: 'ajmer_rd', locality: 'Bhankrota', address: 'Shri Ram Nagar, Bhankrota', site_lat: 26.8781, site_lng: 75.6747, location_source: 'pin', services: JSON.stringify(['turnkey', 'architecture']), project_nature: 'new_build', area_sqft: 1800, area_text: '200 gaj', execution_window: 'within_15_days', preferred_slots: JSON.stringify([vStart.toISOString()]), consent: 1, created_at: addMinIso(at, -60 * 26), updated_at: at, submitted_at: addMinIso(at, -60 * 26), qualified_at: addMinIso(at, -60 * 25) });
     const hold = insert('calendar_holds', { user_id: rahul, start_at: vStart.toISOString(), end_at: vEnd.toISOString(), kind: 'visit', ref_type: 'visit', status: 'active', created_at: at });
     const offer = insert('visit_offers', { lead_id: leadC, architect_id: rahul, revision: 1, attempt: 1, slot_start: vStart.toISOString(), slot_end: vEnd.toISOString(), status: 'client_confirmed', hold_id: hold, created_by: 'auto', created_at: addMinIso(at, -60 * 25), updated_at: at });

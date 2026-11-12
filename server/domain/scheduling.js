@@ -4,7 +4,7 @@ import { all, one, run, insert, update, tx, onCommit } from '../db/index.js';
 import { now, nowIso, addMin, addMinIso, jparse, istDate, fromIst, addDays, dayOfWeek, fmtSlot, fmtTime, minutesBetween, haversineM } from '../lib/util.js';
 import { proximity, dispatchSettings, pointOK } from './dispatch.js';
 import { broadcast } from '../lib/http.js';
-import { audit, notify, createTask, getSettings, setting } from '../core/base.js';
+import { audit, notify, createTask, getSettings, setting, isBusinessHours, nextOpening, workingDeadline } from '../core/base.js';
 import { enqueueWhatsApp, enqueueEvent, registerGuard } from '../core/outbox.js';
 import { schedule, cancelTimers, registerTimer } from '../core/timers.js';
 import { t } from '../bot/i18n.js';
@@ -112,6 +112,17 @@ export function slotFromId(id) {
   return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5])).toISOString() : null;
 }
 
+/**
+ * A deadline that ends at least `marginMin` before the visit starts, and never
+ * less than 10 minutes from now (so a late offer can still be answered).
+ */
+function capBefore(deadline, slotStart, marginMin, from) {
+  const latest = new Date(new Date(slotStart).getTime() - marginMin * 60000);
+  const earliest = new Date(new Date(from).getTime() + 10 * 60000);
+  const d = deadline <= latest ? deadline : latest;
+  return d >= earliest ? d : earliest;
+}
+
 // ---------- offers ----------
 export function getOffer(id) { return one('SELECT * FROM visit_offers WHERE id = ?', id); }
 function currentRevision(leadId) { return one('SELECT COALESCE(MAX(revision),0) r FROM visit_offers WHERE lead_id = ?', leadId).r; }
@@ -170,17 +181,24 @@ function createOfferTx(leadId, { architectId = null, slotStart = null, createdBy
     const at = nowIso();
     const revision = currentRevision(leadId) + 1;
     const n = attempt || (one('SELECT COUNT(*) n FROM visit_offers WHERE lead_id=? AND slot_start=?', leadId, start.toISOString()).n + 1);
-    const expiresAt = addMinIso(at, s.offer_timeout_min);
-    const holdId = insert('calendar_holds', { user_id: arch.id, start_at: start.toISOString(), end_at: end.toISOString(), kind: 'hold', ref_type: 'offer', status: 'active', expires_at: addMinIso(at, s.offer_timeout_min + s.client_confirm_timeout_min + 15), created_at: at });
+    // The reply time counts office hours only (an offer made at night is answered in
+    // the morning) and always ends before the visit would start.
+    const expiresAt = capBefore(workingDeadline(s.offer_timeout_min, at), start, 60, at).toISOString();
+    const holdId = insert('calendar_holds', { user_id: arch.id, start_at: start.toISOString(), end_at: end.toISOString(), kind: 'hold', ref_type: 'offer', status: 'active', expires_at: addMinIso(expiresAt, s.client_confirm_timeout_min + 15), created_at: at });
     const offerId = insert('visit_offers', { lead_id: leadId, architect_id: arch.id, revision, attempt: n, slot_start: start.toISOString(), slot_end: end.toISOString(), status: 'pending', expires_at: expiresAt, hold_id: holdId, created_by: createdBy, created_at: at, updated_at: at });
     run('UPDATE calendar_holds SET ref_id=? WHERE id=?', offerId, holdId);
     updateLead(leadId, { status: 'scheduling' }, createdBy);
 
     const ac = ensureContact(arch.phone, { userId: arch.id });
     const lang = ac.language || 'en';
-    const deadline = fmtTime(expiresAt, lang);
+    const deadline = istDate(expiresAt) === istDate(at) ? fmtTime(expiresAt, lang) : fmtSlot(expiresAt, lang);
+    // Offers the system makes by itself outside office hours (auto-approval, the next
+    // architect after a decline) reach the phone when the office opens. A manager's own
+    // click is sent at once.
+    const quiet = !String(createdBy).startsWith('user:') && !isBusinessHours();
     enqueueWhatsApp({
       to: arch.phone, kind: 'offer.architect', sender: 'system', essential: true,
+      delayMin: quiet ? Math.max(0, Math.ceil(minutesBetween(at, nextOpening(at)))) : 0,
       guard: { type: 'offer', id: offerId, status: ['pending'] },
       message: {
         type: 'buttons',
@@ -234,6 +252,7 @@ export function architectRespond(offerId, revision, accept, { userId = null, rea
     if (!o || o.revision !== Number(revision) || o.status !== 'pending' || o.revision !== currentRevision(o.lead_id)) return { stale: true };
     if (userId && o.architect_id !== userId) return { stale: true };
     if (new Date(o.expires_at) < now()) return { stale: true };
+    if (accept && new Date(o.slot_start) <= now()) return { stale: true };
     const s = getSettings();
     const lead = getLead(o.lead_id);
     const arch = getUser(o.architect_id);
@@ -247,12 +266,18 @@ export function architectRespond(offerId, revision, accept, { userId = null, rea
       nextAttempt(lead, o, `${arch.name} declined${reason ? ': ' + reason : ''}`);
       return { ok: true, declined: true };
     }
-    const deadline = addMinIso(at, s.client_confirm_timeout_min);
+    // The client gets office-hours time to confirm (an evening request can be confirmed
+    // next morning), but must confirm at least 30 minutes before the visit.
+    const deadline = capBefore(workingDeadline(s.client_confirm_timeout_min, at), o.slot_start, 30, at).toISOString();
+    // One reminder half-way, counted in office time so it never arrives at night. When the
+    // visit is close, remind half-way between the next opening and the deadline instead.
+    let remindAt = workingDeadline(Math.round(s.client_confirm_timeout_min / 2), at);
+    if (remindAt.toISOString() >= deadline) { const open = nextOpening(at); remindAt = open.toISOString() < deadline ? new Date((open.getTime() + Date.parse(deadline)) / 2) : null; }
     update('visit_offers', o.id, { status: 'accepted', responded_at: at, client_deadline: deadline, updated_at: at });
     run('UPDATE calendar_holds SET expires_at=? WHERE id=?', addMinIso(deadline, 15), o.hold_id);
     enqueueWhatsApp({ to: arch.phone, kind: 'offer.accepted_ack', sender: 'system', message: { type: 'text', text: t('offer_accepted_ack', ac.language) } });
     askClientToConfirm(o, lead, arch);
-    schedule('client_confirm_reminder', { entityType: 'offer', entityId: o.id, revision: o.revision, dueAt: addMinIso(at, Math.round(s.client_confirm_timeout_min / 2)), dedupeKey: `ccr:${o.id}` });
+    if (remindAt) schedule('client_confirm_reminder', { entityType: 'offer', entityId: o.id, revision: o.revision, dueAt: remindAt.toISOString(), dedupeKey: `ccr:${o.id}` });
     schedule('client_confirm_deadline', { entityType: 'offer', entityId: o.id, revision: o.revision, dueAt: deadline, dedupeKey: `ccd:${o.id}` });
     audit(`user:${arch.id}`, 'offer.accepted', 'lead', lead.id, { offerId, via });
     onCommit(() => broadcast('visits'));
@@ -311,6 +336,7 @@ export function clientRespond(offerId, revision, action) {
     const arch = getUser(o.architect_id);
     if (action === 'confirm') {
       if (o.client_deadline && new Date(o.client_deadline) < now()) return { stale: true };
+      if (new Date(o.slot_start) <= now()) return { stale: true };
       cancelTimers('offer', o.id);
       const visit = confirmVisitFromOffer(o);
       setFlow(c.id, null);

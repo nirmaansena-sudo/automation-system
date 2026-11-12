@@ -159,7 +159,10 @@ export function claimTravel(visitId, user) {
     if (!t || t.stale || t.status !== 'approved') throw bad('Manager must approve the current travel estimate first');
     if (!['report_submitted', 'completed'].includes(v.status)) throw bad('Submit the visit report before claiming travel');
     if (!(t.amount > 0)) throw bad('This trip has no payable travel amount');
-    const res = submitExpense(user.id, { category: 'travel', amount: t.amount, claim_date: istDate(v.start_at), description: `${v.ref}: ${t.origin_type} to site${t.policy.round_trip ? ' and return' : ''}; ${t.distance_km} km × ₹${t.policy.rate_per_km}/km; ${t.distance_source}. Travel approval by user ${t.approved_by}.` });
+    // The trip is already done when the report is in. A visit that was booked for a later
+    // day (or late tonight, which is tomorrow in India time) is claimed with today's date.
+    const visitDay = istDate(v.start_at); const today = istDate();
+    const res = submitExpense(user.id, { category: 'travel', amount: t.amount, claim_date: visitDay > today ? today : visitDay, description: `${v.ref}: ${t.origin_type} to site${t.policy.round_trip ? ' and return' : ''}; ${t.distance_km} km × ₹${t.policy.rate_per_km}/km; ${t.distance_source}. Travel approval by user ${t.approved_by}.` });
     if (res.error) throw bad(res.error);
     const expenseId = res.id;
     if (!expenseId) throw new Error('Expense claim was not created');

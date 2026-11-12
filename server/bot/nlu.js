@@ -3,7 +3,8 @@
 import { SERVICES, NATURES, WINDOWS, JAIPUR_LOCALITIES } from './catalog.js';
 import { isDevanagari } from '../lib/util.js';
 
-export const norm = (s) => String(s || '').toLowerCase().replace(/[’']/g, "'").replace(/\s+/g, ' ').trim();
+const HINDI_DIGITS = '०१२३४५६७८९';
+export const norm = (s) => String(s || '').toLowerCase().replace(/[’']/g, "'").replace(/[०-९]/g, (d) => HINDI_DIGITS.indexOf(d)).replace(/\s+/g, ' ').trim();
 const has = (text, words) => words.some((w) => {
   if (/^[a-z0-9 +'-]+$/.test(w)) return new RegExp(`(^|[^a-z0-9])${w.replace(/[+]/g, '\\+')}([^a-z0-9]|$)`).test(text);
   return text.includes(w);
@@ -12,8 +13,11 @@ const has = (text, words) => words.some((w) => {
 const KW = {
   greeting: ['hi', 'hii', 'hello', 'hey', 'helo', 'namaste', 'namaskar', 'ram ram', 'jai shree ram', 'good morning', 'good evening', 'नमस्ते', 'नमस्कार', 'राम राम', 'हेलो'],
   menu: ['menu', 'options', 'start over', 'main menu', 'मेनू'],
-  human: ['human', 'agent', 'person', 'staff', 'call me', 'call back', 'callback', 'talk to', 'speak to', 'baat karni', 'baat karo', 'baat kara', 'phone karo', 'call karo', 'manager', 'executive', 'insaan', 'बात करनी', 'बात करें', 'कॉल करें', 'फोन करो'],
-  stop: ['stop', 'unsubscribe', 'band karo', 'mat bhejo', 'बंद करो', 'मत भेजो'],
+  // Phrases that ask for a person in a sentence of any length.
+  human: ['call me', 'call back', 'callback', 'talk to', 'talk with', 'speak to', 'speak with', 'connect me', 'customer care', 'customer support', 'real person', 'your manager', 'your team', 'your staff', 'your executive', 'someone from', 'baat karni', 'baat karo', 'baat kara', 'baat karwa', 'kisi se baat', 'koi insaan', 'phone karo', 'call karo', 'बात करनी', 'बात करें', 'बात करा', 'कॉल करें', 'फोन करो'],
+  // Single words that only mean "give me a person" in a short message
+  // ("agent please"), not inside "a house for a 4 person family" or "staff quarters".
+  human_word: ['human', 'agent', 'person', 'staff', 'manager', 'executive', 'insaan', 'operator'],
   start: ['start', 'subscribe'],
   emergency: ['emergency', 'urgent help', 'accident', 'collapse', 'fire', 'आपात', 'इमरजेंसी'],
   status: ['status', 'update', 'progress', 'kitna hua', 'kaam kaha tak', 'kahan tak', 'स्थिति', 'अपडेट', 'प्रगति'],
@@ -31,12 +35,36 @@ const KW = {
   existing: ['my project', 'existing project', 'mera project', 'already', 'ongoing', 'मेरा प्रोजेक्ट'],
 };
 
+// Unsubscribing must be the whole message ("STOP", "please stop messages", "band karo").
+// "Stop work" or "kaam band karo" is an instruction about the site, never an opt-out.
+const OPT_OUT = [
+  /^(?:please |pls |plz |kindly )?(?:stop|unsubscribe|opt ?out)(?: (?:it|this|now|please|pls|all|sending|messaging|messages?|msgs?|sms|updates?|notifications?|whatsapp|me))*$/,
+  /^(?:(?:messages?|msgs?|sms|updates?) )?(?:band karo|band kar do|mat bhejo|bhejna band karo)(?: please)?$/,
+  /^(?:(?:मैसेज|संदेश|अपडेट) )?(?:बंद करो|बंद कर दो|मत भेजो)$/,
+];
+const STOP_WORD = '(?:stop|stopped|halt|pause|hold|band|rok|roko|rokna|rukwa|ruk)';
+const WORK_WORD = '(?:work|working|kaam|kam|construction|site|project|labour|labor)';
+const STOP_WORK = [new RegExp(`(^|[^a-z])${STOP_WORD}([^a-z].*)?[^a-z]${WORK_WORD}([^a-z]|$)`), new RegExp(`(^|[^a-z])${WORK_WORD}([^a-z].*)?[^a-z]${STOP_WORD}([^a-z]|$)`), /काम\s*(बंद|रोक|रुकवा)/, /(बंद|रोक)\s*.*काम/];
+// "fire" inside a service phrase is an enquiry, not an emergency.
+const FIRE_SERVICE = /(^|[^a-z])fire[ -]?(safety|fighting|fight|exit|noc|alarm|proof|proofing|extinguishers?|sprinklers?|doors?|rated|rating|systems?|audit|hydrants?|escape|norms?|compliance|retardant|resistant|place|bricks?|work)([^a-z]|$)/;
+// "staff quarters", "manager cabin", "4 person family" describe the building, not a wish to talk to someone.
+const HUMAN_NOUN = /(^|[^a-z])(staff|servant|manager|executive|agent|operator)s?'?s? (quarters?|rooms?|cabins?|office|toilets?|washrooms?|kitchen|area|housing|accommodation|colony|block)([^a-z]|$)|\d+ ?(person|persons|people|member|members)([^a-z]|$)|(^|[^a-z])person(s)? (family|house|home|flat)([^a-z]|$)/;
+// "free fire" is a game; children message business numbers about it.
+const NOT_FIRE = /(^|[^a-z])(free|garena) ?fire([^a-z]|$)/;
+const plain = (text) => norm(text).replace(/[.,!?।:;()"]+/g, ' ').replace(/\s+/g, ' ').trim();
+
 export function detectIntents(text) {
   const n = norm(text);
+  const p = plain(text);
+  const count = p ? p.split(' ').length : 0;
   const out = new Set();
   for (const [k, words] of Object.entries(KW)) if (has(n, words)) out.add(k);
-  // "stop"/"start" only count as commands when the message is short
-  if (n.split(' ').length > 3) { out.delete('stop'); out.delete('start'); out.delete('yes'); out.delete('no'); }
+  if (OPT_OUT.some((re) => re.test(p))) out.add('stop');
+  else if (STOP_WORK.some((re) => re.test(p))) out.add('stop_work');
+  if (out.has('human_word')) { out.delete('human_word'); if (count <= 4 && !HUMAN_NOUN.test(p)) out.add('human'); }
+  if (out.has('emergency') && (FIRE_SERVICE.test(p) || NOT_FIRE.test(p)) && !has(n, KW.emergency.filter((w) => w !== 'fire'))) out.delete('emergency');
+  // "start", "yes" and "no" only count as commands when the message is short
+  if (count > 3) { out.delete('start'); out.delete('yes'); out.delete('no'); }
   if (/ns-prj-\d{4}-\d+/i.test(text)) out.add('project_ref');
   return out;
 }
@@ -92,16 +120,25 @@ export function parseArea(text) {
     const a = Number(dims[1]) * Number(dims[2]);
     if (a >= 100 && a <= 200000) return { sqft: Math.round(a), text: `${dims[1]}x${dims[2]} ft` };
   }
-  const num = /(\d+(?:\.\d+)?)\s*(sq\.?\s*ft|sqft|sft|square feet|feet|ft|वर्ग फीट|फीट|gaj|gaz|गज|sq\.?\s*yd|sq\.?\s*yards?|yards?|sqyd|sq\.?\s*m|sqm|square meter|square metre|मीटर)?/.exec(n);
-  if (!num) return null;
-  const v = Number(num[1]);
-  const unit = num[2] || '';
-  let sqft = v;
-  if (/gaj|gaz|गज|yd|yard/.test(unit)) sqft = v * 9;
-  else if (/sq\.?\s*m|sqm|meter|metre|मीटर/.test(unit)) sqft = v * 10.764;
-  else if (!unit && v < 100) return null;
-  if (sqft < 100 || sqft > 500000) return null;
-  return { sqft: Math.round(sqft), text: `${num[1]} ${unit || 'sq ft'}`.trim() };
+  // Every number is considered. A clear area unit wins ("3 bhk, 1400 sqft" is 1,400 sq ft, not 3);
+  // plain "feet" counts unless it describes a road or a length ("200 feet bypass", "40 ft wide");
+  // a bare number counts only when nothing better is found and it is a believable area.
+  const re = /(\d+(?:\.\d+)?)\s*(sq\.?\s*ft|sqft|sft|square feet|feet|ft|वर्ग फीट|फीट|gaj|gaz|गज|sq\.?\s*yd|sq\.?\s*yards?|yards?|sqyd|sq\.?\s*m|sqm|square meter|square metre|मीटर)?/g;
+  const LENGTH_WORD = /^\s*(road|rd|bypass|by pass|wide|width|chaud|sadak|रोड|सड़क|front|frontage|height|high|long|lamba|gali|lane)/;
+  let feet = null; let bare = null;
+  for (const num of n.matchAll(re)) {
+    const v = Number(num[1]);
+    const unit = num[2] || '';
+    if (!unit) { if (!bare && v >= 100 && v <= 100000) bare = { sqft: Math.round(v), text: `${num[1]} sq ft` }; continue; }
+    let sqft = v;
+    if (/gaj|gaz|गज|yd|yard/.test(unit)) sqft = v * 9;
+    else if (/sq\.?\s*m|sqm|meter|metre|मीटर/.test(unit)) sqft = v * 10.764;
+    if (sqft < 100 || sqft > 500000) continue;
+    const found = { sqft: Math.round(sqft), text: `${num[1]} ${unit}`.trim() };
+    if (/^(feet|ft|फीट)$/.test(unit)) { if (!feet && !LENGTH_WORD.test(n.slice(num.index + num[0].length))) feet = found; continue; }
+    return found;
+  }
+  return feet || bare;
 }
 
 export function cleanName(text) {

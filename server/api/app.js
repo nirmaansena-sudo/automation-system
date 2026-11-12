@@ -5,6 +5,7 @@ import { bad, notFound, forbidden, HttpError } from '../lib/http.js';
 import { saveMediaBuffer } from '../whatsapp/providers.js';
 import { insert } from '../db/index.js';
 import { getSettings } from '../core/base.js';
+import { isObj } from '../lib/validate.js';
 import { publicUser, selfUser, recordAttendance, requestLeave, submitExpense, updateTask, allowedPlaces } from '../domain/staff.js';
 import { architectRespond, pendingOffersFor } from '../domain/scheduling.js';
 import { getVisit, visitCheckin, markClientNoShow, submitVisitReport, visitsForArchitect } from '../domain/visits.js';
@@ -68,6 +69,7 @@ export function registerApp(r) {
   r.post('/api/app/sync', { auth: 'app', limit: 25 * 1024 * 1024 }, (ctx) => {
     const items = Array.isArray(ctx.body?.items) ? ctx.body.items.slice(0, 100) : [];
     return items.map((it) => {
+      if (!isObj(it)) return { client_event_id: null, error: 'This saved item is damaged and cannot be sent' };
       try {
         return tx(() => {
           if (it.owner_user_id !== undefined && Number(it.owner_user_id) !== ctx.user.id) throw forbidden('Saved item belongs to a different employee');
@@ -116,10 +118,12 @@ export function registerApp(r) {
     const v = getVisit(Number(ctx.params.id));
     if (!v || v.architect_id !== ctx.user.id) throw notFound();
     const b = ctx.body || {};
-    for (const p of (b.photos || []).slice(0, 10)) saveUpload(p, ['visit', v.id], `user:${ctx.user.id}`);
-    const report = { measurements: b.measurements || '', scope: b.scope || '', constraints: b.constraints || '', recommendation: b.recommendation || '', budget_range: b.budget_range || '', interest: b.interest || '', next_step: b.next_step || 'quotation', notes: b.notes || '' };
+    if (b.photos !== undefined && !Array.isArray(b.photos)) throw bad('Photos must be sent as a list');
+    const txt = (x, max = 2000) => (typeof x === 'string' || typeof x === 'number' ? String(x).trim().slice(0, max) : '');
+    const report = { measurements: txt(b.measurements), scope: txt(b.scope), constraints: txt(b.constraints, 500), recommendation: txt(b.recommendation, 500), budget_range: txt(b.budget_range, 120), interest: ['high', 'medium', 'low'].includes(b.interest) ? b.interest : '', next_step: txt(b.next_step, 60) || 'quotation', notes: txt(b.notes) };
     const res = submitVisitReport(v.id, ctx.user.id, report);
     if (res.error) throw bad(res.error);
+    for (const p of (b.photos || []).slice(0, 10)) if (isObj(p)) saveUpload(p, ['visit', v.id], `user:${ctx.user.id}`);
     return res;
   }));
 

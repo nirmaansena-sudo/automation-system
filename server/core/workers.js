@@ -68,8 +68,13 @@ async function handleOne(e) {
 }
 
 let current = null;
-async function inboundLoop() {
+let currentSince = 0;
+const STALLED_MS = 10 * 60 * 1000;
+let runNo = 0;
+async function inboundLoop(run) {
   for (let i = 0; i < 200; i++) {
+    if (run !== runNo) return; // this run was abandoned as stuck; a newer one has taken over
+    currentSince = Date.now(); // heartbeat: "stuck" means one batch, not a busy hour
     inboundAgain = false;
     const st = processStatuses();
     const batch = claimMessages(4);
@@ -79,9 +84,17 @@ async function inboundLoop() {
 }
 /** Single-flight inbound loop. Callers can await the run in progress. */
 export function processInbound() {
+  if (current && Date.now() - currentSince > STALLED_MS) {
+    // Something awaited inside never answered. Let go of that run: its events return to the
+    // queue after their lock expires and a fresh run takes over.
+    console.error(`[${nowIso()}] Incoming-message worker was stuck for ${Math.round((Date.now() - currentSince) / 60000)} min; starting a fresh run.`);
+    try { tx(() => notify({ audience: 'owner', title: 'Message handling was stuck and has been restarted', body: 'Incoming WhatsApp messages were waiting for more than 10 minutes. They are being processed again now. If this repeats, check the internet connection and the AI/WhatsApp settings.', link: '#/settings', level: 'error' })); } catch (e) { console.error('could not record the restart', e.message); }
+    setState('inbound_restarted', nowIso());
+    current = null;
+  }
   if (current) { inboundAgain = true; return current; }
-  const p = inboundLoop();
-  current = p;
+  const p = inboundLoop(++runNo);
+  current = p; currentSince = Date.now();
   const clear = () => { if (current === p) current = null; };
   p.then(clear, clear);
   return p;
@@ -115,4 +128,6 @@ export function startWorkers() {
   setState('workers_started', nowIso());
 }
 
-export function inboundState() { return { running: !!current, again: inboundAgain }; }
+export function inboundState() { return { running: !!current, again: inboundAgain, since: current ? currentSince : null }; }
+/** Test hook: pretend the current run started `ms` ago. */
+export function ageInboundRunForTests(ms) { if (current) currentSince = Date.now() - ms; }

@@ -9,4 +9,5 @@ if [ "$1" = "n8n" ]; then
   eval "$(node scripts/n8n-env.js sh)"
   exec npx --yes n8n
 fi
-exec node --disable-warning=ExperimentalWarning server/main.js --open
+# The supervisor starts the system and starts it again if it ever stops unexpectedly.
+exec node --disable-warning=ExperimentalWarning server/supervisor.js --open

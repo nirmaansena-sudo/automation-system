@@ -1,6 +1,6 @@
 // Leads: capture, qualification (ONE manager gate), decisions.
 import { all, one, run, insert, update, onCommit } from '../db/index.js';
-import { now, nowIso, addMinIso, jparse, fmtSlot, fromIst, istDate, addDays } from '../lib/util.js';
+import { now, nowIso, addMinIso, jparse, fmtSlot, fromIst, istDate, addDays, haversineM } from '../lib/util.js';
 import { broadcast } from '../lib/http.js';
 import { audit, nextRef, notify, createTask, setting, isBusinessHours, businessHoursText } from '../core/base.js';
 import { enqueueEvent } from '../core/outbox.js';
@@ -46,6 +46,21 @@ export function updateLead(id, patch, actor = 'bot') {
   return getLead(id);
 }
 
+/**
+ * A pin far from the chosen area is usually the client's current position, not
+ * the site. Returns a short warning for the manager, or '' when the pin is plausible.
+ */
+export function pinWarning(lead) {
+  if (!lead || lead.site_lat === null || lead.site_lat === undefined || lead.site_lng === null || lead.site_lng === undefined) return '';
+  const zones = all('SELECT code, lat, lng FROM zones WHERE lat IS NOT NULL AND lng IS NOT NULL');
+  if (!zones.length) return '';
+  const km = (z) => haversineM(Number(lead.site_lat), Number(lead.site_lng), z.lat, z.lng) / 1000;
+  const own = zones.find((z) => z.code === lead.zone && z.code !== 'other_jaipur');
+  const dist = own ? km(own) : Math.min(...zones.map(km));
+  if (!Number.isFinite(dist) || dist <= (own ? 15 : 40)) return '';
+  return `The location pin is about ${Math.round(dist)} km from ${own ? 'the chosen area' : 'Jaipur'}. It may be where the client was standing, not the site: check the address before sending an architect.`;
+}
+
 export function needsVisit(lead) {
   const services = jparse(lead.services, []);
   return services.some((s) => setting('services_requiring_visit').includes(s));
@@ -75,6 +90,7 @@ export function missingFields(lead, ctx) { return requiredFields(lead).filter((f
 /** Lead submitted by the client (or website) → qualification. */
 export function submitLead(leadId, { actor = 'bot', slotOther = false } = {}) {
   let lead = getLead(leadId);
+  if (!lead) return { error: 'Lead not found' };
   const contact = getContact(lead.contact_id);
   const lang = contact?.language || 'en';
   const at = nowIso();

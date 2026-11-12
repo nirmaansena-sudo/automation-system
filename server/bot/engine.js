@@ -3,7 +3,7 @@
 // Client-visible text comes only from fixed bilingual messages, approved FAQ
 // answers and database facts — AI is used for understanding only.
 import { all, one, run, insert, update, tx } from '../db/index.js';
-import { now, nowIso, addMinIso, jparse, minutesBetween, fmtSlot, isDevanagari, truncate, prettyPhone, normPhone } from '../lib/util.js';
+import { now, nowIso, addMinIso, jparse, minutesBetween, fmtSlot, isDevanagari, truncate, prettyPhone, normPhone, haversineM } from '../lib/util.js';
 import { broadcast } from '../lib/http.js';
 import { config } from '../config.js';
 import { audit, notify, createTask, setting, isBusinessHours, businessHoursText, setState } from '../core/base.js';
@@ -131,9 +131,15 @@ async function handleClient(m, rec) {
   if (conv.mode !== 'human' && text && words(text) <= 2 && (intents.has('hindi') || intents.has('english'))) {
     return tx(() => { const lang = intents.has('hindi') ? 'hi' : 'en'; run('UPDATE contacts SET language=? WHERE id=?', lang, contact.id); const c = getContact(contact.id); say(c, 'lang_set'); if (!conv.flow) mainMenu(c); else if (conv.flow === 'lead') askNext(c, ctx.leadId); });
   }
-  if (intents.has('stop')) return tx(() => { run('UPDATE contacts SET opted_out=1, opted_out_at=? WHERE id=?', nowIso(), contact.id); audit('client', 'contact.opt_out', 'contact', contact.id); say(contact, 'opted_out'); });
-  if (intents.has('start') && contact.opted_out) return tx(() => { run('UPDATE contacts SET opted_out=0 WHERE id=?', contact.id); say(contact, 'opted_in'); });
+  if (intents.has('stop')) return tx(() => optOut(contact));
+  if (intents.has('start') && contact.opted_out) return tx(() => { run('UPDATE contacts SET opted_out=0 WHERE id=?', contact.id); audit('client', 'contact.opt_in', 'contact', contact.id); say(contact, 'opted_in'); });
   if (intents.has('emergency')) return tx(() => emergency(contact, text));
+  // "Stop work" from a client with a running project is an instruction for the
+  // site team, so a person must read it. It never unsubscribes anyone.
+  if (intents.has('stop_work') && conv.mode !== 'human') {
+    const running = contactProjects(contact).find((p) => ['active', 'awaiting_advance', 'on_hold', 'handover'].includes(p.status));
+    if (running) return tx(() => handoff(contact, `Client asked to stop or pause work on ${running.ref}: “${truncate(text, 160)}”`, `⛔ ${displayName(contact)} asked to stop work · ${running.ref}`));
+  }
 
   if (conv.mode === 'human') {
     if (setting('human_auto_resume') && !conv.human_requested_at && !conv.needs_attention && conv.owner_until && new Date(conv.owner_until) < now()) {
@@ -561,12 +567,32 @@ function handleLocation(m, rec, conv, ctx) {
     run('UPDATE leads SET site_lat=?, site_lng=?, address=COALESCE(?, address), location_source=?, updated_at=? WHERE id=?', loc.lat, loc.lng, addr || null, 'pin', nowIso(), lead.id);
     audit('client', 'lead.location', 'lead', lead.id, loc);
     broadcast('leads');
-    if (conv.flow === 'lead' && lead.status === 'capturing') return askNext(c, lead.id);
+    if (lead.status === 'capturing' && !lead.zone) {
+      const z = zoneFromPin(loc.lat, loc.lng);
+      // A far-away pin is usually where the person is standing, not the site: keep asking for the area.
+      if (z && z !== 'outside') updateLead(lead.id, { zone: z, ...(lead.locality ? {} : { locality: truncate(loc.name || loc.address || '', 120) || null }) }, 'bot');
+    }
+    if (conv.flow === 'lead' && lead.status === 'capturing') return askNext(c, lead.id, conv.step === 'location' ? null : t('pin_thanks', c.language));
     return say(c, 'media_ack');
   }
   const proj = contactProjects(c)[0];
   if (proj && proj.site_lat === null) run('UPDATE projects SET site_lat=?, site_lng=? WHERE id=?', loc.lat, loc.lng, proj.id);
   return say(c, 'media_ack');
+}
+
+/**
+ * Which service area a location pin belongs to: the nearest named area within
+ * 6 km, otherwise "other Jaipur" up to 40 km from the city, otherwise outside.
+ */
+export function zoneFromPin(lat, lng) {
+  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) return null;
+  const zones = activeZones().filter((z) => z.lat !== null && z.lng !== null);
+  if (!zones.length) return null;
+  const km = (z) => haversineM(Number(lat), Number(lng), z.lat, z.lng) / 1000;
+  const named = zones.filter((z) => !['other_jaipur', 'outside'].includes(z.code)).map((z) => ({ code: z.code, km: km(z) })).sort((a, b) => a.km - b.km)[0];
+  if (named && named.km <= 6) return named.code;
+  const nearest = Math.min(...zones.map(km));
+  return nearest <= 40 ? 'other_jaipur' : 'outside';
 }
 
 function mediaAck(m, rec, conv, ctx) {
@@ -587,7 +613,9 @@ async function idle(text, intents, rec, conv) {
   const projects = contactProjects(c);
   if (intents.has('complaint') && !projects.length) return tx(() => handoff(c, 'Customer complaint requires review'));
   if (intents.has('thanks') && words(text) <= 4) return tx(() => say(c, 'thanks_reply'));
-  if (intents.has('menu') || (intents.has('greeting') && words(text) <= 4)) return tx(() => mainMenu(c));
+  const said = extractAll(text, zonesWithKw());
+  const saysWhat = !!(said.services || said.zone || said.area_sqft || said.project_nature);
+  if (intents.has('menu') || (intents.has('greeting') && words(text) <= 4 && !saysWhat)) return tx(() => mainMenu(c));
   if (projects.length) {
     const pr = projects[0];
     if (intents.has('status')) return tx(() => botSend(c, { type: 'text', text: projectStatusText(pr, c.language) }, { kind: 'project.status' }));
@@ -623,7 +651,7 @@ async function idle(text, intents, rec, conv) {
     const intent = ai?.intent;
     if (intent === 'talk_to_human' && ai.confidence >= 0.6) return handoff(c, 'AI: client wants a person');
     if (intent === 'job_or_vendor' && ai.confidence >= 0.6) return jobOrVendor(c, text, 'vendor');
-    if (intent === 'opt_out' && ai.confidence >= 0.8) { run('UPDATE contacts SET opted_out=1, opted_out_at=? WHERE id=?', nowIso(), c.id); return say(c, 'opted_out'); }
+    if (intent === 'opt_out' && ai.confidence >= 0.8) return optOut(c);
     if (projects.length && ['project_status', 'existing_project'].includes(intent)) return botSend(c, { type: 'text', text: projectStatusText(projects[0], c.language) }, { kind: 'project.status' });
     if (projects.length && intent === 'payment') return botSend(c, { type: 'text', text: paymentsText(projects[0], c.language) }, { kind: 'project.payments' });
     const hasLeadInfo = found.services || found.zone || found.area_sqft || found.project_nature || ['new_enquiry', 'provide_details'].includes(intent);
@@ -668,10 +696,19 @@ function verifyProject(c, text) {
 }
 
 // ---------------------------------------------------------------- hand-off to people
-function handoff(c, reason) {
+/** The client unsubscribed. Reminders and daily updates stop, so the team must know. */
+function optOut(c) {
+  run('UPDATE contacts SET opted_out=1, opted_out_at=? WHERE id=?', nowIso(), c.id);
+  audit('client', 'contact.opt_out', 'contact', c.id);
+  const proj = contactProjects(c)[0]; const lead = openLeadFor(c.id);
+  if (proj || lead) notify({ audience: 'managers', title: `${displayName(c)} unsubscribed from WhatsApp updates`, body: `${proj ? proj.ref : lead.ref}: reminders and daily updates will no longer reach them. If it was a mistake, call them; they can reply START to subscribe again.`, link: `#/inbox/${c.id}`, level: 'warn' });
+  say(c, 'opted_out');
+}
+
+function handoff(c, reason, title = null) {
   const conv = getConversation(c.id);
   run("UPDATE conversations SET mode='human', owner_user_id=NULL, owner_until=?, human_requested_at=?, needs_attention=1, attention_reason=?, flow=NULL, step=NULL WHERE id=?", addMinIso(nowIso(), setting('human_release_min') * 3), nowIso(), reason, conv.id);
-  notify({ audience: 'managers', title: `💬 ${displayName(c)} wants to talk`, body: reason, link: `#/inbox/${c.id}`, level: 'warn' });
+  notify({ audience: 'managers', title: title || `💬 ${displayName(c)} wants to talk`, body: reason, link: `#/inbox/${c.id}`, level: 'warn' });
   if (isBusinessHours()) {
     schedule('human_sla', { entityType: 'conversation', entityId: conv.id, dueAt: addMinIso(nowIso(), setting('human_sla_min')), dedupeKey: `human-sla:${conv.id}` });
     say(c, 'handoff');

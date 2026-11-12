@@ -25,6 +25,12 @@ async function timedFetch(url, opts, timeoutMs) {
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try { return await fetch(url, { ...opts, signal: ac.signal }); } finally { clearTimeout(t); }
 }
+/** Never wait forever for something a remote server promised: a stalled answer must not freeze message handling. */
+function within(promise, ms, what) {
+  let t;
+  const timeout = new Promise((_, reject) => { t = setTimeout(() => reject(Object.assign(new Error(`${what} took too long`), { name: 'AbortError' })), ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
 
 /** Network failure: did the request possibly reach WhatsApp? */
 function networkResult(e) {
@@ -46,7 +52,8 @@ function cloudLike({ name, messagesUrl, mediaBase, headers }) {
         res = await timedFetch(messagesUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify(payload) }, config.whatsapp.requestTimeoutMs);
       } catch (e) { return networkResult(e); }
       let body = null;
-      try { body = await res.json(); } catch { body = null; }
+      try { body = await within(res.json(), config.whatsapp.requestTimeoutMs, 'The WhatsApp answer'); }
+      catch (e) { if (e?.name === 'AbortError' && res.ok) return networkResult(e); body = null; }
       if (res.ok && body?.messages?.[0]?.id) return { ok: true, wamid: body.messages[0].id, raw: body };
       const err = body?.error || {};
       const cls = classifyError(err.code, res.status);
@@ -61,14 +68,14 @@ function cloudLike({ name, messagesUrl, mediaBase, headers }) {
       if (!/^[A-Za-z0-9._-]{1,200}$/.test(String(mediaId))) throw new Error('Invalid media id');
       const meta = await timedFetch(`${mediaBase()}/${encodeURIComponent(mediaId)}`, { headers: headers() }, 15000);
       if (!meta.ok) throw new Error(`Media lookup failed (${meta.status})`);
-      const info = await meta.json();
+      const info = await within(meta.json(), 15000, 'The media lookup');
       if (Number(info.file_size) > MAX_INBOUND_MEDIA) throw new Error('Media too large to store');
       let url = info.url;
       if (name === 'dialog360' && url) { const u = new URL(url); url = `${config.whatsapp.dialogBase}${u.pathname}${u.search}`; }
       const file = await timedFetch(url, { headers: headers() }, 30000);
       if (!file.ok) throw new Error(`Media download failed (${file.status})`);
       if (Number(file.headers.get('content-length')) > MAX_INBOUND_MEDIA) throw new Error('Media too large to store');
-      return { buffer: Buffer.from(await file.arrayBuffer()), mime: info.mime_type || file.headers.get('content-type') || 'application/octet-stream' };
+      return { buffer: Buffer.from(await within(file.arrayBuffer(), 60000, 'The media download')), mime: info.mime_type || file.headers.get('content-type') || 'application/octet-stream' };
     },
   };
 }

@@ -2,8 +2,8 @@
 import os from 'node:os';
 import { exec } from 'node:child_process';
 import path from 'node:path';
-import { config } from './config.js';
-import { openDb } from './db/index.js';
+import { config, configProblems } from './config.js';
+import { openDb, closeDb, quickCheck } from './db/index.js';
 import { Router, createServer, serveStatic, HttpError } from './lib/http.js';
 import { sessionUser, requireRoles, DASHBOARD_ROLES } from './lib/auth.js';
 import { safeEqual, nowIso } from './lib/util.js';
@@ -106,11 +106,35 @@ function lanAddresses() {
   return out;
 }
 
+// Exit codes the launchers understand: 78 = fix a setting (restarting will not help),
+// anything else non-zero = unexpected stop (restart automatically).
+const EXIT_CONFIG = 78;
+function stopWith(lines) {
+  console.error('\n  The system did not start:');
+  for (const l of lines) console.error(`   • ${l}`);
+  console.error('\n  Fix this and start again. (Settings are in the .env file in this folder.)\n');
+  process.exit(EXIT_CONFIG);
+}
+
 export function startServer() {
-  const server = buildServer();
+  const problems = configProblems();
+  if (problems.errors.length) stopWith(problems.errors);
+  let server;
+  try { server = buildServer(); }
+  catch (e) {
+    // A database that cannot be opened is the one start-up failure a restart cannot cure.
+    if (/malformed|not a database|file is encrypted|disk image|SQLITE_(CORRUPT|NOTADB)|Migration .* failed/i.test(String(e?.message))) {
+      console.error(e);
+      stopWith([`The database could not be opened (${String(e.message).slice(0, 140)}).`, `Data folder: ${config.dataDir}`, 'Do not delete anything. Restore the latest backup into a new folder: see docs/RECOVERY.md ("Validate and restore").']);
+    }
+    throw e;
+  }
+  const integrity = quickCheck();
+  if (integrity !== 'ok') stopWith([`The database reported damage (${integrity.slice(0, 160)}).`, `Data folder: ${config.dataDir}`, 'Stop using this copy and restore the latest backup into a new folder: see docs/RECOVERY.md ("Validate and restore").']);
   server.on('error', (e) => {
-    if (e.code === 'EADDRINUSE') console.error(`\n  Port ${config.port} is already in use. Is the system already running in another window?\n  Close it, or set PORT=3001 in the .env file.\n`);
-    else console.error(e);
+    if (e.code === 'EADDRINUSE') { console.error(`\n  Port ${config.port} is already in use. Is the system already running in another window?\n  Close it, or set PORT=3001 in the .env file.\n`); process.exit(EXIT_CONFIG); }
+    if (e.code === 'EACCES') { console.error(`\n  This computer does not allow port ${config.port}. Set another PORT (for example 3000) in the .env file.\n`); process.exit(EXIT_CONFIG); }
+    console.error(e);
     process.exit(1);
   });
   server.listen(config.port, config.host, () => {
@@ -126,10 +150,35 @@ export function startServer() {
     console.log(`  Data folder       : ${config.dataDir}`);
     const code = setupCodeForLog();
     if (code) console.log(`  First-time setup code: ${code}  (type it once when you create the owner account)`);
+    if (problems.warnings.length) { console.log('\n  Please check these settings:'); for (const w of problems.warnings) console.log(`   • ${w}`); }
     console.log('  Stop with Ctrl+C\n');
     if (process.argv.includes('--open')) openBrowser(`http://localhost:${config.port}/admin/`);
   });
-  const stop = () => { console.log('Stopping…'); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000); };
-  process.on('SIGINT', stop); process.on('SIGTERM', stop);
+  // Stop cleanly: finish what is in flight, close the database, then exit. Live-update
+  // connections never end by themselves, so they are closed after a short grace period.
+  let stopping = false;
+  const stop = (code = 0) => {
+    if (stopping) return; stopping = true;
+    console.log('Stopping…');
+    const finish = () => { try { closeDb(); } catch { /* already closed */ } process.exit(code); };
+    server.close(finish);
+    server.closeIdleConnections?.();
+    setTimeout(() => server.closeAllConnections?.(), 1200).unref();
+    setTimeout(finish, 3500).unref();
+  };
+  process.on('SIGINT', () => stop(0)); process.on('SIGTERM', () => stop(0));
+  // One failed background promise must not take the business offline: log it, show it in
+  // the health panel and keep serving.
+  process.on('unhandledRejection', (reason) => {
+    console.error(`[${nowIso()}] Unexpected background error (the system keeps running):`, reason);
+    try { setState('last_unexpected_error', { at: nowIso(), message: String(reason?.message || reason).slice(0, 300) }); } catch { /* database not available */ }
+  });
+  // A thrown error nobody caught leaves the program in an unknown state. Stop cleanly;
+  // the launcher (start-windows.bat, start.sh, Docker) starts it again within seconds.
+  process.on('uncaughtException', (err) => {
+    console.error(`[${nowIso()}] Unexpected error — restarting to stay safe:`, err);
+    try { setState('last_unexpected_error', { at: nowIso(), message: String(err?.message || err).slice(0, 300), restarted: true }); } catch { /* database not available */ }
+    stop(1);
+  });
   return server;
 }

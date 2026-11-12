@@ -1,6 +1,6 @@
 // Settings, audit log, reference numbers, in-app notifications, system state.
 import { all, one, run, insert, onCommit } from '../db/index.js';
-import { now, nowIso, istParts, jparse, istTime, hmToMin } from '../lib/util.js';
+import { now, nowIso, istParts, jparse, istTime, hmToMin, istDate, fromIst, addDays, addMin, dayOfWeek } from '../lib/util.js';
 import { broadcast } from '../lib/http.js';
 
 export const DEFAULT_SETTINGS = {
@@ -85,7 +85,47 @@ export function isBusinessHours(d = now()) {
   const p = istParts(d);
   if (!bh.days.includes(p.dow)) return false;
   const m = p.hh * 60 + p.mm;
-  return m >= hmToMin(bh.open) && m < hmToMin(bh.close);
+  const close = hmToMin(bh.close);
+  // "Closes 23:59" means open until midnight (otherwise the last minute of the day counts as closed).
+  return m >= hmToMin(bh.open) && (m < close || close >= 23 * 60 + 59);
+}
+/** The office is open all day, every day (nothing to wait for). */
+function alwaysOpen(bh) { return bh.days.length === 7 && hmToMin(bh.open) === 0 && hmToMin(bh.close) >= 23 * 60 + 59; }
+/** First moment at or after `d` when the office is open. */
+export function nextOpening(d = now()) {
+  const from = d instanceof Date ? d : new Date(d);
+  const bh = setting('business_hours');
+  if (alwaysOpen(bh) || isBusinessHours(from)) return new Date(from);
+  let day = istDate(from);
+  for (let i = 0; i < 9; i++) {
+    const open = fromIst(day, bh.open);
+    if (bh.days.includes(dayOfWeek(day)) && open >= from) return open;
+    day = addDays(day, 1);
+  }
+  return new Date(from); // no working day configured: never block
+}
+/**
+ * A deadline after `minutes` of office time. The clock stops while the office is
+ * closed, so a request made in the evening is not lost overnight: 30 minutes
+ * given at 5:50 pm ends at 8:20 am, and one given at 11 pm ends at 8:30 am.
+ */
+export function workingDeadline(minutes, from = now()) {
+  const start = from instanceof Date ? from : new Date(from);
+  let left = Math.max(0, Number(minutes) || 0);
+  const bh = setting('business_hours');
+  if (alwaysOpen(bh) || hmToMin(bh.close) <= hmToMin(bh.open)) return addMin(start, left);
+  let cur = nextOpening(start);
+  for (let i = 0; i < 40; i++) {
+    const close = fromIst(istDate(cur), bh.close);
+    const open = (close.getTime() - cur.getTime()) / 60000;
+    if (open <= 0) return addMin(cur, left);
+    if (left <= open + 1) return addMin(cur, left); // up to a minute past closing still ends today
+    left -= open;
+    const next = nextOpening(close);
+    if (next.getTime() <= cur.getTime()) return addMin(cur, left);
+    cur = next;
+  }
+  return addMin(cur, left);
 }
 export function businessHoursText() { const bh = setting('business_hours'); return { open: fmt12(bh.open), close: fmt12(bh.close) }; }
 function fmt12(hm) { const [h, m] = hm.split(':').map(Number); const ap = h >= 12 ? 'PM' : 'AM'; const h12 = ((h + 11) % 12) + 1; return m ? `${h12}:${String(m).padStart(2, '0')} ${ap}` : `${h12} ${ap}`; }

@@ -53,6 +53,7 @@ const S = {
   not_sure: { en: 'not sure', hi: 'पता नहीं' },
   team_will_call: { en: 'team will call to fix', hi: 'टीम कॉल करके तय करेगी' },
   pin_received: { en: 'pin received ✅', hi: 'पिन मिला ✅' },
+  pin_thanks: { en: '📍 Got your location, thank you.', hi: '📍 आपकी लोकेशन मिल गई, धन्यवाद।' },
 
   submitted: {
     en: '✅ Thank you{name}! Your enquiry reference is *{ref}*.\nWe are arranging your architect visit{slot}. You\'ll get the confirmation right here.',

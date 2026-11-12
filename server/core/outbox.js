@@ -78,10 +78,18 @@ export function kickDispatcher() {
   if (!config.workersEnabled || kickTimer) return;
   kickTimer = setTimeout(() => { kickTimer = null; dispatchLoop().catch((e) => console.error('dispatcher', e)); }, 25);
 }
+let dispatchingSince = 0;
 async function dispatchLoop() {
+  if (dispatching && Date.now() - dispatchingSince > 10 * 60 * 1000) {
+    // A send never came back. Its lease has expired, so the job is picked up again safely.
+    console.error(`[${nowIso()}] Outgoing-message worker was stuck; starting a fresh run.`);
+    setState('outbox_restarted', nowIso());
+    dispatching = false;
+  }
   if (dispatching) return;
-  dispatching = true;
-  try { for (let i = 0; i < 50; i++) { const n = await dispatchOnce(); if (!n) break; } } finally { dispatching = false; }
+  dispatching = true; dispatchingSince = Date.now();
+  const mine = dispatchingSince;
+  try { for (let i = 0; i < 50; i++) { const n = await dispatchOnce(); if (!n) break; } } finally { if (dispatchingSince === mine) dispatching = false; }
 }
 
 /** Claim due jobs: oldest unfinished job per recipient (FIFO), leases for crash safety. */

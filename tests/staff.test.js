@@ -40,6 +40,9 @@ test('no GPS or poor accuracy is evidence for review, not automatic absence; off
 });
 
 test('evening sweep closes forgotten check-outs for review', async () => {
+  // An open session that certainly belongs to today, whatever time the suite runs at.
+  const open = await h.api('POST', '/api/app/attendance', { kind: 'in', lat: 26.90893, lng: 75.73427, accuracy_m: 12, client_event_id: 'sweep-open-1' }, suresh);
+  assert.equal(open.status, 200, JSON.stringify(open.body));
   const before = h.db.one("SELECT COUNT(*) n FROM approvals WHERE kind='attendance_exception' AND title LIKE 'Missing check-out%'").n;
   const r = await h.api('POST', '/api/attendance/sweep/evening');
   assert.equal(r.status, 200);

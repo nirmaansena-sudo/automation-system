@@ -43,11 +43,23 @@ if not exist ".env" (
 echo  Starting... the dashboard opens in your browser.
 echo  Keep this window open while you use the system. Close it to stop.
 echo.
-node --disable-warning=ExperimentalWarning server\main.js --open
+rem The supervisor starts the system and starts it again if it ever stops unexpectedly.
+node --disable-warning=ExperimentalWarning server\supervisor.js --open
+set "NS_EXIT=!errorlevel!"
 echo.
-echo  The system has stopped. Press any key to close this window.
+if "!NS_EXIT!"=="78" (
+  echo  The system did not start because a setting needs to be fixed ^(see the message above^).
+  echo  Settings are in the .env file in this folder. Open it with Notepad, fix it, save,
+  echo  then double-click start-windows.bat again.
+) else if not "!NS_EXIT!"=="0" (
+  echo  The system stopped because of an error ^(shown above^). Your data is safe.
+  echo  Double-click start-windows.bat to start again. If it keeps happening, see docs\RECOVERY.md.
+) else (
+  echo  The system has stopped.
+)
+echo  Press any key to close this window.
 pause >nul
-exit /b 0
+exit /b !NS_EXIT!
 
 :nonode
 echo  Node.js is not installed on this computer.

@@ -7,6 +7,7 @@ function leadBlock(a) {
   return html`<dl class="kv small"><dt>Client</dt><dd>${l.name || '—'} · ${phone(l.phone)}</dd><dt>Need</dt><dd>${lt.services || '—'} · ${lt.nature || '—'} · ${lt.area || '—'}</dd>
     <dt>Where</dt><dd>${lt.place || '—'}${l.address ? ` · ${l.address}` : ''}${l.site_lat ? html` · <a class="link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${l.site_lat},${l.site_lng}">map pin</a>` : ''}</dd>
     <dt>Start</dt><dd>${label(l.execution_window)}</dd>${l.requirements ? html`<dt>Notes</dt><dd class="pre">${l.requirements}</dd>` : ''}</dl>
+    ${lt.pinWarning ? html`<div class="notice warn small" style="margin-top:8px">⚠ ${lt.pinWarning}</div>` : ''}
     ${s ? html`<div class="notice good small" style="margin-top:8px">Suggested: <b>${s.architect}</b> on <b>${dt(s.slot)}</b>${s.alternatives?.length ? html` · alternatives: ${s.alternatives.map((x) => x.name).join(', ')}` : ''}</div>` : html`<div class="notice warn small" style="margin-top:8px">No architect is free at the client's time. Choose another time.</div>`}`;
 }
 

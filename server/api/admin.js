@@ -29,6 +29,7 @@ import { listApprovals, decideApproval } from '../domain/approvals.js';
 import { publicUser, createUser, updateUser, resetPin, teamBoard, updateTask, monthlySummary, attendanceMorningSweep, attendanceEveningSweep, recomputeDay } from '../domain/staff.js';
 import { SERVICES, NATURES, WINDOWS, COMMERCIAL_MODELS, SERVICE_TYPES } from '../bot/catalog.js';
 import { usageReport } from '../lib/costs.js';
+import { optText, reqText, optChoice, optDateTime, isDay, isObj } from '../lib/validate.js';
 
 const M = ['owner', 'manager'];
 const MF = ['owner', 'manager', 'finance'];
@@ -36,6 +37,47 @@ const O = ['owner'];
 const parseRow = (r, keys) => { if (!r) return r; const o = { ...r }; for (const k of keys) o[k] = jparse(o[k], k.endsWith('s') ? [] : {}); return o; };
 const mediaFor = (type, id) => all('SELECT id, mime, caption, uploaded_by, created_at, lat, lng FROM media WHERE owner_type=? AND owner_id=? ORDER BY id', type, id);
 const timeline = (type, id) => all('SELECT * FROM audit_log WHERE entity_type=? AND entity_id=? ORDER BY id DESC LIMIT 100', type, id).map((a) => ({ ...a, data: jparse(a.data, null) }));
+
+const SERVICE_CODES = SERVICES.map((x) => x.code); const NATURE_CODES = NATURES.map((x) => x.code); const WINDOW_CODES = WINDOWS.map((x) => x.code);
+/** Cleaned lead fields from the New lead / Edit requirement forms. Unknown keys are ignored. */
+function leadFields(b) {
+  const out = {};
+  const put = (k, v) => { if (v !== undefined) out[k] = v; };
+  put('name', optText(b.name, 'Name', 120)); put('locality', optText(b.locality, 'Locality', 120));
+  put('address', optText(b.address, 'Address', 300)); put('requirements', optText(b.requirements, 'Notes', 2000));
+  if (b.services !== undefined) {
+    if (!Array.isArray(b.services) || b.services.some((x) => !SERVICE_CODES.includes(x))) throw bad('Choose the services from the list');
+    out.services = [...new Set(b.services)];
+  }
+  if (b.zone !== undefined) {
+    const zone = optText(b.zone, 'Area', 40);
+    if (zone && !one('SELECT 1 FROM zones WHERE code=?', zone)) throw bad('Choose the area from the list');
+    out.zone = zone;
+  }
+  put('project_nature', optChoice(b.project_nature, NATURE_CODES, 'the project type'));
+  put('execution_window', optChoice(b.execution_window, WINDOW_CODES, 'the start time'));
+  put('priority', optChoice(b.priority, ['normal', 'high', 'low'], 'the priority'));
+  if (b.area_sqft !== undefined) {
+    if (b.area_sqft === null || b.area_sqft === '') out.area_sqft = null;
+    else { const n = Number(b.area_sqft); if (typeof b.area_sqft === 'boolean' || !Number.isFinite(n) || n <= 0 || n > 10000000) throw bad('Area must be a number of square feet'); out.area_sqft = Math.round(n); }
+  }
+  return out;
+}
+/** Cleaned task fields; only the keys that were sent are returned. */
+function taskFields(b) {
+  const out = {};
+  if (b.title !== undefined) out.title = reqText(b.title, 'Title', 200);
+  if (b.description !== undefined) out.description = optText(b.description, 'Description', 2000);
+  if (b.priority !== undefined) out.priority = optChoice(b.priority, ['normal', 'high', 'low'], 'the priority') || 'normal';
+  if (b.due_at !== undefined) out.due_at = optDateTime(b.due_at, 'Due time');
+  if (b.status !== undefined && b.status !== null && b.status !== '') out.status = optChoice(b.status, ['todo', 'in_progress', 'blocked', 'done', 'cancelled'], 'the status');
+  if (b.note !== undefined) out.note = optText(b.note, 'Note', 1000);
+  if (b.assignee_id !== undefined) {
+    if (b.assignee_id === null || b.assignee_id === '' || b.assignee_id === 0) out.assignee_id = null;
+    else { const id = Number(b.assignee_id); if (!Number.isSafeInteger(id) || !one('SELECT 1 FROM users WHERE id=? AND active=1', id)) throw bad('Choose an active team member'); out.assignee_id = id; }
+  }
+  return out;
+}
 
 const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) && new Date(`${v}T00:00:00Z`).toISOString().startsWith(v);
 
@@ -110,8 +152,8 @@ export function registerAdmin(r) {
     };
   });
   r.post('/api/inbox/:id/reply', d(M), (ctx) => { const text = String(ctx.body?.text || '').trim(); if (!text) throw bad('Type a message'); return staffReply(Number(ctx.params.id), ctx.user, text.slice(0, 4000)); });
-  r.post('/api/inbox/:id/takeover', d(M), (ctx) => takeOver(Number(ctx.params.id), ctx.user));
-  r.post('/api/inbox/:id/release', d(M), (ctx) => { const conv = getConversation(Number(ctx.params.id)); releaseToBot(conv.id, `released by user ${ctx.user.id}`); return { ok: true }; });
+  r.post('/api/inbox/:id/takeover', d(M), (ctx) => { if (!getConversation(Number(ctx.params.id))) throw notFound('Chat not found'); return takeOver(Number(ctx.params.id), ctx.user); });
+  r.post('/api/inbox/:id/release', d(M), (ctx) => { const conv = getConversation(Number(ctx.params.id)); if (!conv) throw notFound('Chat not found'); releaseToBot(conv.id, `released by user ${ctx.user.id}`); return { ok: true }; });
   r.post('/api/inbox/:id/read', d(M), (ctx) => { run('UPDATE conversations SET unread=0 WHERE contact_id=?', Number(ctx.params.id)); broadcast('inbox'); return { ok: true }; });
   r.post('/api/inbox/:id/resolve', d(M), (ctx) => { run('UPDATE conversations SET needs_attention=0, attention_reason=NULL WHERE contact_id=?', Number(ctx.params.id)); broadcast('inbox'); return { ok: true }; });
   r.post('/api/inbox/:id/template', d(M), (ctx) => tx(() => {
@@ -147,23 +189,29 @@ export function registerAdmin(r) {
     };
   });
   r.post('/api/leads', d(M), (ctx) => tx(() => {
-    const b = ctx.body || {}; const wa = normPhone(b.phone);
-    if (!wa || wa.length < 11) throw bad('Enter the client\'s phone number');
-    const c = ensureContact(wa, { name: b.name });
-    const lead = createLead({ contactId: c.id, source: b.source || 'manual', fields: { name: b.name, services: b.services || [], zone: b.zone, locality: b.locality, project_nature: b.project_nature, area_sqft: b.area_sqft ? Number(b.area_sqft) : null, area_text: b.area_sqft ? `${b.area_sqft} sq ft` : null, execution_window: b.execution_window, requirements: b.requirements, address: b.address, consent: true }, actor: `user:${ctx.user.id}` });
-    if (b.slot) updateLead(lead.id, { preferred_slots: [b.slot] }, `user:${ctx.user.id}`);
+    const b = ctx.body || {}; const wa = typeof b.phone === 'string' || typeof b.phone === 'number' ? normPhone(String(b.phone)) : null;
+    if (!wa || !/^\d{11,15}$/.test(wa)) throw bad('Enter the client\'s phone number');
+    const f = leadFields(b);
+    const source = ['manual', 'phone', 'walk_in', 'referral', 'website', 'whatsapp'].includes(b.source) ? b.source : 'manual';
+    const c = ensureContact(wa, { name: f.name || undefined });
+    const lead = createLead({ contactId: c.id, source, fields: { ...f, services: f.services || [], area_text: f.area_sqft ? `${f.area_sqft} sq ft` : null, consent: true }, actor: `user:${ctx.user.id}` });
+    if (f.priority && f.priority !== 'normal') updateLead(lead.id, { priority: f.priority }, `user:${ctx.user.id}`);
+    const slot = optDateTime(b.slot, 'Visit time');
+    if (slot) updateLead(lead.id, { preferred_slots: [slot] }, `user:${ctx.user.id}`);
     if (b.submit) submitLead(lead.id, { actor: `user:${ctx.user.id}` });
     return { id: lead.id, ref: lead.ref };
   }));
   r.patch('/api/leads/:id', d(M), (ctx) => tx(() => {
     const b = ctx.body || {}; const id = Number(ctx.params.id);
-    if (b.status === 'lost') { markLost(id, b.lost_reason || 'Closed by manager', `user:${ctx.user.id}`); return { ok: true }; }
-    const patch = { ...b }; delete patch.status;
-    if (patch.area_sqft !== undefined) patch.area_sqft = patch.area_sqft ? Number(patch.area_sqft) : null;
+    if (!getLead(id)) throw notFound('Lead not found');
+    if (b.status === 'lost') { markLost(id, optText(b.lost_reason, 'Reason', 300) || 'Closed by manager', `user:${ctx.user.id}`); return { ok: true }; }
+    const patch = leadFields(b);
+    if (patch.priority === null) delete patch.priority;
+    if (patch.area_sqft !== undefined) patch.area_text = patch.area_sqft ? `${patch.area_sqft} sq ft` : null;
     updateLead(id, patch, `user:${ctx.user.id}`);
     return { ok: true };
   }));
-  r.post('/api/leads/:id/submit', d(M), (ctx) => tx(() => submitLead(Number(ctx.params.id), { actor: `user:${ctx.user.id}` })));
+  r.post('/api/leads/:id/submit', d(M), (ctx) => tx(() => { if (!getLead(Number(ctx.params.id))) throw notFound('Lead not found'); return submitLead(Number(ctx.params.id), { actor: `user:${ctx.user.id}` }); }));
   r.post('/api/leads/:id/offer', d(M), (ctx) => {
     const res = createOffer(Number(ctx.params.id), { architectId: ctx.body?.architectId || null, slotStart: ctx.body?.slotStart || null, createdBy: `user:${ctx.user.id}` });
     if (res.error) throw bad(res.error);
@@ -313,7 +361,9 @@ export function registerAdmin(r) {
   r.post('/api/projects/:id/changes', d(M), (ctx) => { const res = tx(() => createChangeRequest(Number(ctx.params.id), ctx.body || {}, ctx.user)); if (res.error) throw bad(res.error); return res; });
   r.post('/api/projects/:id/logs', d(M), (ctx) => { const res = tx(() => addSiteLog(Number(ctx.params.id), ctx.user.id, ctx.body || {})); if (res.error) throw bad(res.error); return res; });
   r.post('/api/projects/:id/update', d(M), (ctx) => tx(() => {
-    const p = getProject(Number(ctx.params.id)); const c = getContact(p.client_contact_id); const text = String(ctx.body?.text || '').trim();
+    const p = getProject(Number(ctx.params.id)); if (!p) throw notFound('Project not found');
+    const c = getContact(p.client_contact_id); if (!c) throw bad('This project has no client WhatsApp number');
+    const text = typeof ctx.body?.text === 'string' ? ctx.body.text.trim() : '';
     if (!text) throw bad('Type the update');
     enqueueWhatsApp({ to: c.wa_id, kind: 'project.manual_update', sender: `user:${ctx.user.id}`, essential: true, message: { type: 'text', text: `🏗 ${p.ref}: ${text}` }, template: { name: 'ns_client_update', params: [p.ref, text.slice(0, 600)] } });
     return { ok: true };
@@ -382,7 +432,7 @@ export function registerAdmin(r) {
     const day = ctx.query.day || istDate();
     return all('SELECT e.*, u.name FROM attendance_events e JOIN users u ON u.id=e.user_id WHERE e.effective_time>=? AND e.effective_time<? ORDER BY e.effective_time DESC', fromIst(day, '00:00').toISOString(), fromIst(addDays(day, 1), '00:00').toISOString()).map((e) => parseRow(e, ['reasons']));
   });
-  r.post('/api/attendance/recompute', d(M), (ctx) => tx(() => { const day = ctx.body?.day || istDate(); for (const u of all('SELECT id FROM users WHERE active=1')) recomputeDay(u.id, day); return { ok: true }; }));
+  r.post('/api/attendance/recompute', d(M), (ctx) => tx(() => { const day = ctx.body?.day || istDate(); if (!isDay(day)) throw bad('Day must be a real date (YYYY-MM-DD)'); for (const u of all('SELECT id FROM users WHERE active=1')) recomputeDay(u.id, day); return { ok: true }; }));
   r.get('/api/leave', d(), () => all('SELECT l.*, u.name FROM leave_requests l JOIN users u ON u.id=l.user_id ORDER BY l.id DESC LIMIT 200'));
   r.get('/api/expenses', d(), () => all('SELECT e.*, u.name, p.ref project_ref FROM expense_claims e JOIN users u ON u.id=e.user_id LEFT JOIN projects p ON p.id=e.project_id ORDER BY e.id DESC LIMIT 300'));
   r.post('/api/expenses/:id/paid', d(MF), (ctx) => tx(() => { const e = one('SELECT * FROM expense_claims WHERE id=?', Number(ctx.params.id)); if (!e || e.status !== 'approved') throw bad('Only approved claims can be marked paid'); update('expense_claims', e.id, { status: 'paid' }); notify({ userId: e.user_id, title: 'Expense paid 💸', body: `₹${e.amount}` }); audit(`user:${ctx.user.id}`, 'expense.paid', 'expense', e.id); return { ok: true }; }));
@@ -402,8 +452,13 @@ export function registerAdmin(r) {
     return all(`SELECT t.*, u.name assignee FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE ${where} ${ctx.query.assignee ? 'AND t.assignee_id=?' : ''} ORDER BY CASE t.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, COALESCE(t.due_at, '9999'), t.id DESC LIMIT 500`,
       ...(st !== 'open' && st !== 'all' ? [st] : []), ...(ctx.query.assignee ? [Number(ctx.query.assignee)] : []));
   });
-  r.post('/api/tasks', d(M), (ctx) => tx(() => { const b = ctx.body || {}; if (!b.title) throw bad('Title is required'); const id = createTask({ title: b.title, description: b.description, assigneeId: b.assignee_id ? Number(b.assignee_id) : null, priority: b.priority || 'normal', dueAt: b.due_at || null, entityType: b.entity_type, entityId: b.entity_id, createdBy: `user:${ctx.user.id}` }); return { id }; }));
-  r.patch('/api/tasks/:id', d(M), (ctx) => { const res = tx(() => updateTask(Number(ctx.params.id), ctx.body || {}, ctx.user)); if (res.error) throw bad(res.error); return res; });
+  r.post('/api/tasks', d(M), (ctx) => tx(() => {
+    const b = ctx.body || {}; const f = taskFields(b);
+    if (!f.title) throw bad('Title is required');
+    const id = createTask({ title: f.title, description: f.description, assigneeId: f.assignee_id || null, priority: f.priority || 'normal', dueAt: f.due_at || null, entityType: optText(b.entity_type, 'Linked record', 40), entityId: Number.isSafeInteger(Number(b.entity_id)) && Number(b.entity_id) > 0 ? Number(b.entity_id) : null, createdBy: `user:${ctx.user.id}` });
+    return { id };
+  }));
+  r.patch('/api/tasks/:id', d(M), (ctx) => { const res = tx(() => updateTask(Number(ctx.params.id), taskFields(ctx.body || {}), ctx.user)); if (res.error) throw bad(res.error); return res; });
   r.get('/api/tickets', d(), () => all("SELECT t.*, k.name, k.profile_name, k.wa_id, p.ref project_ref, u.name assignee FROM tickets t LEFT JOIN contacts k ON k.id=t.contact_id LEFT JOIN projects p ON p.id=t.project_id LEFT JOIN users u ON u.id=t.assignee_id ORDER BY CASE WHEN t.status IN ('resolved','closed') THEN 1 ELSE 0 END, t.id DESC LIMIT 300"));
   r.patch('/api/tickets/:id', d(M), (ctx) => { const res = tx(() => updateTicket(Number(ctx.params.id), ctx.body || {}, ctx.user)); if (res.error) throw bad(res.error); return res; });
 
@@ -483,15 +538,26 @@ export function registerAdmin(r) {
   }));
   r.patch('/api/settings', d(M), (ctx) => tx(() => { const patch = ctx.body; validateSettings(patch); if (Object.hasOwn(patch, 'dispatch')) patch.dispatch = validateDispatch(patch.dispatch); if (Object.hasOwn(patch, 'travel')) patch.travel = validateTravel(patch.travel); saveSettings(patch, `user:${ctx.user.id}`); return { ok: true, settings: getSettings() }; }));
   r.put('/api/zones', d(M), (ctx) => tx(() => {
-    for (const [i, z] of (ctx.body?.zones || []).entries()) {
-      if (!z.code || !z.name) continue;
+    const zones = ctx.body?.zones;
+    if (!Array.isArray(zones) || zones.length > 200) throw bad('Send the list of zones');
+    for (const [i, z] of zones.entries()) {
+      if (!isObj(z) || typeof z.code !== 'string' || typeof z.name !== 'string' || !z.code.trim() || !z.name.trim()) continue;
+      if (!/^[a-z0-9_]{1,40}$/.test(z.code)) throw bad(`Zone code "${String(z.code).slice(0, 40)}" may only use small letters, numbers and _`);
+      for (const k of ['lat', 'lng']) if (z[k] !== null && z[k] !== undefined && z[k] !== '' && !Number.isFinite(Number(z[k]))) throw bad(`${z.name}: latitude and longitude must be numbers`);
+      if ((z.lat ?? '') !== '' && (Math.abs(Number(z.lat)) > 90 || Math.abs(Number(z.lng ?? 0)) > 180)) throw bad(`${z.name}: latitude or longitude is out of range`);
       run('INSERT INTO zones(code, name, name_hi, lat, lng, active, sort) VALUES (?,?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name, name_hi=excluded.name_hi, lat=excluded.lat, lng=excluded.lng, active=excluded.active, sort=excluded.sort', z.code, z.name, z.name_hi || null, z.lat ?? null, z.lng ?? null, z.active === false ? 0 : 1, i);
     }
     audit(`user:${ctx.user.id}`, 'zones.update', 'zones', null);
     return { ok: true };
   }));
-  r.post('/api/faqs', d(M), (ctx) => tx(() => { const b = ctx.body || {}; if (!b.question || !b.answer_en) throw bad('Question and English answer are required'); const id = insert('faqs', { question: b.question, answer_en: b.answer_en, answer_hi: b.answer_hi || null, keywords: b.keywords || '', active: b.active === false ? 0 : 1, updated_at: nowIso() }); audit(`user:${ctx.user.id}`, 'faq.create', 'faq', id); return { id }; }));
-  r.patch('/api/faqs/:id', d(M), (ctx) => tx(() => { const b = ctx.body || {}; const patch = { updated_at: nowIso() }; for (const k of ['question', 'answer_en', 'answer_hi', 'keywords']) if (b[k] !== undefined) patch[k] = b[k]; if (b.active !== undefined) patch.active = b.active ? 1 : 0; update('faqs', Number(ctx.params.id), patch); audit(`user:${ctx.user.id}`, 'faq.update', 'faq', Number(ctx.params.id), b); return { ok: true }; }));
+  r.post('/api/faqs', d(M), (ctx) => tx(() => { const b = ctx.body || {}; const question = optText(b.question, 'Question', 300); const answer = optText(b.answer_en, 'English answer', 2000); if (!question || !answer) throw bad('Question and English answer are required'); const id = insert('faqs', { question, answer_en: answer, answer_hi: optText(b.answer_hi, 'Hindi answer', 2000) || null, keywords: optText(b.keywords, 'Keywords', 500) || '', active: b.active === false ? 0 : 1, updated_at: nowIso() }); audit(`user:${ctx.user.id}`, 'faq.create', 'faq', id); return { id }; }));
+  r.patch('/api/faqs/:id', d(M), (ctx) => tx(() => { const b = ctx.body || {}; const patch = { updated_at: nowIso() };
+    if (!one('SELECT 1 FROM faqs WHERE id=?', Number(ctx.params.id))) throw notFound('Answer not found');
+    if (b.question !== undefined) patch.question = reqText(b.question, 'Question', 300);
+    if (b.answer_en !== undefined) patch.answer_en = reqText(b.answer_en, 'English answer', 2000);
+    if (b.answer_hi !== undefined) patch.answer_hi = optText(b.answer_hi, 'Hindi answer', 2000);
+    if (b.keywords !== undefined) patch.keywords = optText(b.keywords, 'Keywords', 500) || '';
+    if (b.active !== undefined) patch.active = b.active ? 1 : 0; update('faqs', Number(ctx.params.id), patch); audit(`user:${ctx.user.id}`, 'faq.update', 'faq', Number(ctx.params.id), b); return { ok: true }; }));
   r.del('/api/faqs/:id', d(M), (ctx) => tx(() => { run('DELETE FROM faqs WHERE id=?', Number(ctx.params.id)); return { ok: true }; }));
   r.post('/api/holidays', d(M), (ctx) => tx(() => { const { day, name } = ctx.body || {}; if (!/^\d{4}-\d{2}-\d{2}$/.test(day || '')) throw bad('Date must be YYYY-MM-DD'); run('INSERT OR REPLACE INTO holidays(day, name) VALUES (?,?)', day, name || 'Holiday'); return { ok: true }; }));
   r.del('/api/holidays/:day', d(M), (ctx) => tx(() => { run('DELETE FROM holidays WHERE day=?', ctx.params.day); return { ok: true }; }));

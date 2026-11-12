@@ -36,6 +36,11 @@ export function openDb(file) {
   return db;
 }
 export function closeDb() { if (db) { db.close(); db = null; cache.clear(); } }
+/** Fast structural check of the database file: 'ok' or the first problems found. */
+export function quickCheck() {
+  try { const rows = db.prepare('PRAGMA quick_check(5)').all(); return rows.map((r) => Object.values(r)[0]).join('; ') || 'ok'; }
+  catch (e) { return String(e.message); }
+}
 export function rawDb() { return db; }
 
 function migrate() {

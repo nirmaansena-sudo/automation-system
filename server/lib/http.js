@@ -40,23 +40,31 @@ export class Router {
       const m = r.re.exec(pathname);
       if (!m) continue;
       const params = {};
-      r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      try { r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); }
+      catch { throw bad('That address is not valid'); }
       return { route: r, params };
     }
     return null;
   }
 }
 
+// How much of an oversized upload is read and thrown away so the sender still
+// receives the "too large" answer (closing mid-upload shows up as a network error).
+const DISCARD_LIMIT = 16 * 1024 * 1024;
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
-    const chunks = []; let size = 0;
+    const chunks = []; let size = 0; let tooLarge = false; let settled = false;
+    const done = (fn, v) => { if (!settled) { settled = true; fn(v); } };
     req.on('data', (c) => {
       size += c.length;
-      if (size > limit) { reject(new HttpError(413, 'Request too large')); req.destroy(); return; }
+      if (tooLarge) { if (size > limit + DISCARD_LIMIT) { done(reject, new HttpError(413, 'That upload is too large')); req.destroy(); } return; }
+      if (size > limit) { tooLarge = true; chunks.length = 0; return; }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+    req.on('end', () => (tooLarge ? done(reject, new HttpError(413, 'That upload is too large')) : done(resolve, Buffer.concat(chunks))));
+    req.on('error', (e) => done(reject, e));
+    // The sender went away before finishing: stop waiting for the rest.
+    req.on('close', () => { if (!req.complete) done(reject, new HttpError(400, 'The upload was interrupted')); });
   });
 }
 export function parseCookies(header) {
@@ -164,7 +172,9 @@ function makeCtx(req, res, url, trustedProxies) {
 }
 
 export function serveStatic(ctx, rootDir, relPath, { spaFallback } = {}) {
-  const safe = path.normalize(decodeURIComponent(relPath)).replace(/^(\.\.[/\\])+/, '');
+  let decoded;
+  try { decoded = decodeURIComponent(relPath); } catch { throw notFound(); }
+  const safe = path.normalize(decoded).replace(/^(\.\.[/\\])+/, '');
   let file = path.join(rootDir, safe);
   if (!file.startsWith(rootDir)) throw notFound();
   if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
@@ -208,6 +218,23 @@ export function broadcast(topic) {
   }, 150);
 }
 
+/**
+ * Safety net: a value the database refuses (a missing required field, a link to
+ * something that no longer exists, a duplicate) is the caller's input, so it gets
+ * a plain explanation instead of "something went wrong". Nothing was saved.
+ */
+export function constraintMessage(e) {
+  const m = /(FOREIGN KEY|NOT NULL|UNIQUE|CHECK) constraint failed(?::\s*(\S+))?/i.exec(String(e?.message || ''));
+  if (!m) return null;
+  const field = m[2] ? m[2].split('.').pop().replace(/_/g, ' ') : '';
+  switch (m[1].toUpperCase()) {
+    case 'FOREIGN KEY': return 'One of the selected items no longer exists. Refresh the page and choose again.';
+    case 'NOT NULL': return field ? `A required detail is missing: ${field}.` : 'A required detail is missing.';
+    case 'UNIQUE': return field ? `That ${field} is already in use.` : 'That already exists.';
+    default: return 'One of the values is not allowed here.';
+  }
+}
+
 export function createServer({ router, before, fallback, onError, trustedProxies = [] }) {
   return http.createServer(async (req, res) => {
     let url;
@@ -230,6 +257,8 @@ export function createServer({ router, before, fallback, onError, trustedProxies
         const type = String(req.headers['content-type'] || '');
         if (type.includes('application/json') && ctx.rawBody.length) {
           try { ctx.body = JSON.parse(ctx.rawBody.toString('utf8')); } catch { throw bad('Invalid JSON body'); }
+          // Every endpoint takes named fields. A bare list, number, text or null is a mistake.
+          if (ctx.body === null || typeof ctx.body !== 'object' || Array.isArray(ctx.body)) throw bad('Send the details as named fields');
         } else if (type.includes('application/x-www-form-urlencoded')) {
           ctx.body = Object.fromEntries(new URLSearchParams(ctx.rawBody.toString('utf8')));
         } else ctx.body = {};
@@ -238,9 +267,12 @@ export function createServer({ router, before, fallback, onError, trustedProxies
       if (out !== undefined && !res.headersSent && !ctx.headersSent) ctx.json(out);
     } catch (e) {
       if (res.headersSent) { try { res.end(); } catch { /* ignore */ } return; }
-      const status = e instanceof HttpError ? e.status : 500;
+      let status = e instanceof HttpError ? e.status : 500;
+      let message = e.message;
+      const constraint = status === 500 ? constraintMessage(e) : null;
+      if (constraint) { status = 400; message = constraint; console.warn(`[${new Date().toISOString()}] ${req.method} ${url.pathname}: rejected by the database (${e.message})`); }
       if (status >= 500) (onError || console.error)(e, ctx || { method: req.method, path: url.pathname });
-      const body = { error: status >= 500 ? 'Something went wrong on the server. It has been logged.' : e.message, ...(e.extra || {}) };
+      const body = { error: status >= 500 ? 'Something went wrong on the server. It has been logged.' : message, ...(e.extra || {}) };
       if (ctx) ctx.json(body, status);
       else { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); }
     }
