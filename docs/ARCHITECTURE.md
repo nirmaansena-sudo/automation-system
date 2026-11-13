@@ -163,7 +163,9 @@ server/
   seed/                    demo data
 public/admin  public/app  public/shared   dashboard, employee PWA, shared UI
 n8n/workflows               5 importable workflows
-tests/                      end-to-end tests (npm test)
+tests/                      end-to-end tests (npm test; npm run test:times repeats them at other times and dates)
+tools/ui-check/             optional browser checks of every screen (developers; needs Playwright)
+server/supervisor.js        restarts the system after an unexpected stop (used by the start files)
 ```
 
 ## Tests
@@ -172,4 +174,5 @@ tests/                      end-to-end tests (npm test)
 `flow.test.js` (enquiry → approval → offer → confirmation → visit details with pin → report → quotation → project →
 stages → handover, Hindi/Hinglish), `reliability.test.js` (signatures, dedupe, 24-hour window, retries, unknown
 outcomes, FIFO, guards — against a mock Cloud API), `dialog360.test.js`, `staff.test.js` (attendance, leave,
-expenses, roles) and `n8n.test.js` (workflow logic). `npm run check` validates the n8n files.
+expenses, roles), `n8n.test.js` (workflow logic) and `devils-advocate.test.js` (awkward messages, night-time
+deadlines, broken input, wrong settings, self-restart — see [RELIABILITY-REVIEW.md](RELIABILITY-REVIEW.md)). `npm run check` validates the n8n files.

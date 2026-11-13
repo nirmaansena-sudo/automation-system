@@ -156,4 +156,7 @@ to pick a new time.
 | Someone's check-in shows *needs review* | *Approvals → attendance* — it is evidence, decide with the photo/location |
 | A daily update or reminder did not go | *Settings → Routines* — last run and result; *Run now* |
 | Owner forgot the password or lost the authenticator | Run `scripts/reset-owner-password.js` where the data lives — see [RECOVERY.md](RECOVERY.md#owner-locked-out) |
+| The start window says "The system did not start" | Fix the `.env` line it names and start again — see [RECOVERY.md](RECOVERY.md#the-system-stopped-or-will-not-start) |
+| "Cannot reach the system" banner on the dashboard | The system is restarting or the connection dropped. The page returns by itself; if not, check the start window |
+| An architect did not get an offer made at night | Offers made by the system outside office hours are delivered at opening time. Use *Choose architect / time* to send one at once |
 | Anything red in *System health* | *Settings → Connections*; see [GO-LIVE.md §9](GO-LIVE.md#9-monitoring) |

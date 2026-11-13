@@ -1,4 +1,10 @@
-# Nirmaan Sena 1.2.1 — Hybrid Automation System
+# Nirmaan Sena 1.3.0 — Hybrid Automation System
+
+**1.3.0 reliability update:** the bot no longer misreads ordinary messages ("stop work", "fire safety",
+plot sizes); reply deadlines count office hours, so nothing expires overnight; broken input and wrong
+settings get plain answers; the system restarts itself after an unexpected stop; the dashboard works on a
+phone and tells you when the connection drops. What the features do is unchanged. Read
+[RELIABILITY-REVIEW.md](docs/RELIABILITY-REVIEW.md) for the 31 fixes and the four upgrade steps.
 
 **1.2.1 security update:** fixes from a two-round red-team review — client buttons tied to their owner,
 no stored scripts, owner-only control of manager/finance accounts, PIN logins limited to employee rights,
@@ -91,8 +97,12 @@ start-windows.bat          start the system (Windows)
 start-n8n-windows.bat      start n8n locally (optional)
 ./start.sh  |  ./start.sh n8n     same on Mac/Linux
 npm test                   business, security, recovery, travel and cost-control regressions
+npm run test:times         the same tests as if it were midnight, closing time, Sunday, month-end, year-end
 npm run check              validate the n8n workflow files
 ```
+
+Both start files run a small supervisor: if the system stops unexpectedly it is started again within
+seconds. A settings mistake is different: it stops with a plain message and waits for you to fix `.env`.
 
 Requirements: Node.js 22.13+ and the single pinned open-source dependency `h3-js` (`npm ci`).
 SQLite, HTTP, encryption and backup logic use Node built-ins. Maps, AI and speech services are optional;

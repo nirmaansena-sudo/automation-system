@@ -12,6 +12,24 @@ evidence and choose sent, confirmed not sent (permits another attempt), or cance
 A delayed delivery receipt resolves the held message automatically. The ordinary
 Retry button cannot resend an unknown delivery.
 
+## The system stopped, or will not start
+
+`start-windows.bat` and `start.sh` run the system under a small supervisor (`server/supervisor.js`).
+
+| What you see | What it means | What to do |
+|---|---|---|
+| "The system stopped unexpectedly … Starting it again in 3 seconds" | A fault stopped the system. | Nothing: it restarts within seconds. Unfinished messages, timers and routines continue where they were. |
+| "The system stopped 5 times in a row right after starting" | The fault returns immediately each time. | Read the lines above it. Restore the latest backup if the database is named. |
+| "The system did not start:" with a list | A mistake in `.env` (for example `WHATSAPP_PROVIDER=mata`). It is **not** restarted. | Fix the line it names, save, start again. |
+| "Port 3000 is already in use" | The system is already running, or another program has the port. | Close the other window, or set `PORT=3001` in `.env`. |
+| A new line under *System health* after starting | A smaller doubt: a misspelt setting name, WhatsApp chosen but keys empty, http/https mismatch. | Fix it in `.env` when convenient. |
+
+In Docker the container restarts by Docker's own rule. With a settings mistake `docker compose ps` shows
+*restarting* and `docker compose logs app` ends with the line to fix.
+
+Message handling that hangs for 10 minutes (a provider that accepts a connection but never answers) is
+abandoned and restarted automatically; the owner gets a notification and the event is retried.
+
 ## Routine and timer recovery
 
 Routine business changes and the completion marker now commit in the same
