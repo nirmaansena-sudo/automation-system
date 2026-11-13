@@ -101,6 +101,8 @@ npm run test:times         the same tests as if it were midnight, closing time, 
 npm run check              validate the n8n workflow files
 ```
 
+Hosting on Oracle Cloud: see [deploy/oci/README.md](deploy/oci/README.md).
+
 Both start files run a small supervisor: if the system stops unexpectedly it is started again within
 seconds. A settings mistake is different: it stops with a plain message and waits for you to fix `.env`.
 

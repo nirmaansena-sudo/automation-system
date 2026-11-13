@@ -14,6 +14,9 @@ fixed HTTPS address, so it moves to a small cloud server. Plan about half a day.
 
 ## 1. Server and domain
 
+**Oracle Cloud (OCI):** a ready plan with two helper scripts is in [deploy/oci/README.md](../deploy/oci/README.md)
+(one free Arm VM in Mumbai, automatic setup, nightly off-site backups to Object Storage).
+
 * **Server**: any VPS with Ubuntu 24.04 LTS, 2 vCPU, 2–4 GB RAM, 40 GB SSD, preferably in an Indian region
   (Mumbai/Bengaluru) for speed. Typical cost ₹500–1,500 per month.
 * **Domain**: create one DNS **A record** pointing to the server's IP address:
