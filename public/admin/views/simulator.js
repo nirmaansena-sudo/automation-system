@@ -65,7 +65,7 @@ export default {
     const p = await api.get('/api/sim/phones');
     return html`<div class="page-head"><div><h1>WhatsApp simulator</h1><div class="sub">Test the complete journey on this PC — every message goes through the same webhook, bot, outbox and timers as real WhatsApp.</div></div>
       <div class="row"><button class="btn" data-ff="30">⏩ +30 min</button><button class="btn" data-ff="120">⏩ +2 h</button><button class="btn" data-ff="1440">⏩ +1 day</button><button class="btn" id="webform">🌐 Website enquiry</button></div></div>
-      <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,420px) minmax(0,1fr);align-items:start">
+      <div class="grid sim-grid">
         <section class="card"><header><h2>Act as</h2></header>
           <form id="newnum" class="stack"><label class="field"><span>New client number</span><input name="wa" placeholder="e.g. 98765 43210" value="${state.wa && !p.staff.some((s) => s.phone === state.wa) ? state.wa.slice(2) : ''}"></label><label class="field"><span>WhatsApp profile name</span><input name="name" placeholder="e.g. Deepak Saini" value="${state.name || ''}"></label><button class="btn primary">Use this number</button></form>
           <div class="nav-group" style="padding-left:0">Clients</div><div class="chips">${p.clients.map((c) => html`<span class="chip ${c.wa_id === state.wa ? 'on' : ''}" data-wa="${c.wa_id}" data-name="${c.name || c.profile_name || ''}">${c.name || c.profile_name || phone(c.wa_id)}</span>`)}</div>
@@ -76,7 +76,7 @@ export default {
           <form class="phone-compose" id="compose"><div class="drop" id="attach"><button type="button" class="btn round" id="attachbtn" aria-label="Attach">＋</button><div class="drop-menu">
             ${PRESETS.map((x, i) => html`<button type="button" data-preset="${i}">📍 ${x.name}</button>`)}<button type="button" id="photo">📷 Photo…</button><button type="button" id="voice">🎙 Voice note</button></div></div>
             <textarea name="text" placeholder="Message" rows="1"></textarea><button class="btn primary round" aria-label="Send">➤</button></form>
-          <input type="file" id="photofile" accept="image/*,application/pdf" class="hide"></div>
+          <input type="file" id="photofile" accept="image/*,application/pdf" class="hide" aria-label="Photo or PDF to send" tabindex="-1"></div>
         <section class="card"><header><h2>Try these</h2></header><ol class="ink2" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px">
           <li>As a <b>new client</b>, type <i>“Hi”</i> — or <i>“mujhe Vaishali Nagar me 150 gaj plot pe ghar banwana hai”</i>.</li>
           <li>Answer with the buttons, share a 📍 location from ＋, pick a visit time, confirm.</li>

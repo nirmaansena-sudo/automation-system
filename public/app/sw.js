@@ -1,6 +1,6 @@
 // Service worker: keeps the app shell available offline. API calls always go
 // to the network; when offline the app queues actions itself.
-const CACHE = 'ns-app-v2';
+const CACHE = 'ns-app-v3';
 const SHELL = ['/app/', '/app/app.js', '/app/offline.js', '/app/travel.js', '/shared/ui.js', '/shared/style.css', '/shared/favicon.svg', '/app/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {

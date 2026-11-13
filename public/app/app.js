@@ -1,7 +1,7 @@
 // Employee / architect / supervisor app: check-in with GPS, visit offers,
 // visit reports, daily site logs, tasks, leave and expenses. Works offline:
 // actions are queued on the phone and synced when the connection returns.
-import { html, raw, api, setToken, $, on, toast, modal, formData, dt, date, time, ago, inr, badge, empty, label, options, readImage, todayIst } from '/shared/ui.js';
+import { html, raw, api, setToken, $, on, toast, modal, formData, dt, date, time, ago, inr, badge, empty, label, options, readImage, todayIst, withBusy, installDoubleTapGuard } from '/shared/ui.js';
 import { IndexedStore, UserQueue } from '/app/offline.js';
 import { travelVisitCard, travelProfileCard, bindTravel } from '/app/travel.js';
 
@@ -222,24 +222,41 @@ async function render() {
   }
 }
 
-async function punch(kind) {
-  const selfieWanted = $('#selfie')?.checked;
-  toast('Getting your location…');
+// Why a check-in goes to the manager, in the employee's words.
+const REVIEW_WHY = {
+  outside_geofence: 'not at a known site or office', late: 'after your shift start', early_out: 'before your shift end',
+  no_location: 'no GPS position', poor_accuracy: 'weak GPS signal', out_without_in: 'no check-in before it', already_checked_in: 'you were already checked in',
+  device_time_in_future: 'phone clock is ahead', sync_too_late: 'sent long after it was saved', offline_sync: 'sent later from saved work', offline_backdated: 'saved earlier while offline',
+};
+
+// Opens the camera for a selfie. Always settles: a closed camera means "no photo",
+// so the check-in itself is never lost waiting for a picture.
+function pickSelfie() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*'; input.capture = 'user';
+    let done = false; const finish = (value) => { if (!done) { done = true; resolve(value); } };
+    input.onchange = async () => { try { finish(input.files[0] ? await readImage(input.files[0], 800, 0.7) : null); } catch { finish(null); } };
+    if ('oncancel' in input) input.addEventListener('cancel', () => finish(null));
+    // Older phones do not report a closed camera: once the app is back in view and no photo came, carry on without one.
+    else window.addEventListener('focus', () => setTimeout(() => { if (!input.files?.length) finish(null); }, 3000), { once: true });
+    input.click();
+  });
+}
+
+async function punch(kind, btn) {
+  // The camera must open straight from the tap (phones block it after a wait), so it
+  // starts first and the GPS fix is taken at the same time.
+  const selfie = $('#selfie')?.checked ? pickSelfie() : Promise.resolve(null);
+  if (btn) btn.textContent = 'Getting your location…';
   const loc = await locate();
-  let photo = null;
-  if (selfieWanted) {
-    photo = await new Promise((resolve) => {
-      const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*'; input.capture = 'user';
-      input.onchange = async () => { try { resolve(input.files[0] ? await readImage(input.files[0], 800, 0.7) : null); } catch { resolve(null); } };
-      input.click();
-    });
-  }
+  const photo = await selfie;
+  if (btn?.isConnected) btn.textContent = kind === 'in' ? 'Checking in…' : 'Checking out…';
   if (loc.error) toast(loc.error, 'err');
   const body = { kind, lat: loc.lat ?? null, lng: loc.lng ?? null, accuracy_m: loc.accuracy_m ?? null, photo };
   try {
     const r = await sendOrQueue('attendance', '/api/app/attendance', body);
     if (r.queued) toast('Saved on this phone — will be sent when online');
-    else toast(r.validation === 'accepted' ? `${kind === 'in' ? 'Checked in' : 'Checked out'}${r.place ? ` at ${r.place}` : ''} ✅` : `Recorded — your manager will review (${r.reasons.join(', ')})`, r.validation === 'accepted' ? 'ok' : 'err');
+    else toast(r.validation === 'accepted' ? `${kind === 'in' ? 'Checked in' : 'Checked out'}${r.place ? ` at ${r.place}` : ''} ✅` : `${kind === 'in' ? 'Check-in' : 'Check-out'} recorded. Your manager will review it: ${r.reasons.map((x) => REVIEW_WHY[x] || label(x).toLowerCase()).join(', ')}.`, r.validation === 'accepted' ? 'ok' : 'warn');
   } catch (e) { toast(e.message, 'err'); }
   render();
 }
@@ -253,15 +270,15 @@ function bind() {
     e.preventDefault(); const err = f.querySelector('.form-error'); err.textContent = '';
     try { const r = await api.post('/api/auth/app-login', formData(f)); setToken(r.token); store.set('ns_token', r.token); setIdentity(r.user); me = null; location.hash = '#/home'; await render(); sync(); } catch (ex) { err.textContent = ex.message; }
   });
-  on(root, 'click', '#punch, #punchout', (e, el) => punch(el.dataset.kind));
+  on(root, 'click', '#punch, #punchout', (e, el) => withBusy(el, () => punch(el.dataset.kind, el)));
   on(root, 'click', '#refresh', () => { sync(); render(); });
-  on(root, 'click', '[data-offer]', async (e, el) => {
+  on(root, 'click', '[data-offer]', (e, el) => withBusy(el, async () => {
     const accept = el.dataset.acc === '1';
     let reason = null;
     if (!accept) { const r = await modal({ title: 'Decline visit', submit: 'Decline', body: html`<label class="field"><span>Reason (optional)</span><input name="reason" placeholder="e.g. Another site visit at that time"></label>` }); if (!r) return; reason = r.reason; }
     try { await api.post(`/api/app/offers/${el.dataset.offer}/respond`, { accept, revision: Number(el.dataset.rev), reason }); toast(accept ? 'Accepted — waiting for the client to confirm' : 'Declined'); } catch (err) { toast(err.message, 'err'); }
     render();
-  });
+  }));
   on(root, 'click', '[data-task]', async (e, el) => {
     let note = null;
     if (el.dataset.st !== 'in_progress') { const r = await modal({ title: el.dataset.st === 'done' ? 'Mark done' : 'Blocked', submit: 'Save', body: html`<label class="field"><span>Note (optional)</span><input name="note"></label>` }); if (!r) return; note = r.note; }
@@ -295,10 +312,10 @@ function bind() {
     if (!r) return;
     try { await api.post(`/api/app/milestones/${el.dataset.ready}/ready`, { note: r.note }); toast('Sent for quality check'); render(); } catch (err) { toast(err.message, 'err'); }
   });
-  on(root, 'click', '#vstart', async () => {
-    const id = location.hash.split('/')[2]; const loc = await locate();
-    try { const r = await api.post(`/api/app/visits/${id}/checkin`, loc.error ? {} : loc); toast(r.distance_m !== null && r.distance_m !== undefined ? `Visit started — ${r.distance_m} m from the client's pin` : 'Visit started'); render(); } catch (err) { toast(err.message, 'err'); }
-  });
+  on(root, 'click', '#vstart', (e, el) => withBusy(el, async () => {
+    const id = location.hash.split('/')[2]; el.textContent = 'Getting your location…'; const loc = await locate();
+    try { const r = await api.post(`/api/app/visits/${id}/checkin`, loc.error ? {} : loc); toast(r.distance_m !== null && r.distance_m !== undefined ? `Visit started — ${r.distance_m} m from the client's pin` : 'Visit started'); render(); } catch (err) { toast(err.message, 'err'); if (el.isConnected) el.textContent = 'I have reached the site — start visit'; }
+  }));
   on(root, 'click', '#vnoshow', async () => {
     const id = location.hash.split('/')[2];
     const ok = await modal({ title: 'Client not available?', submit: 'Yes, inform client', danger: true, body: html`<p>The client gets a WhatsApp message to pick a new time and the manager gets a task.</p>` });
@@ -342,6 +359,7 @@ function bind() {
 const saved = store.get('ns_token', null);
 if (saved) { setToken(saved); const user = store.get('ns_user', null); if (user?.id) setIdentity(user); }
 bind();
+installDoubleTapGuard();
 window.addEventListener('hashchange', render);
 render().then(sync);
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/app/sw.js', { scope: '/app/' }).catch(() => {});

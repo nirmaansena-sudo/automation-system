@@ -44,7 +44,7 @@ function business(st) {
 
 function automation(st) {
   return html`<form class="card stack" id="autoform"><div class="form-grid">
-    <div class="field full"><span>Visit start times offered to clients</span><input name="visit_slots" value="${st.visit_slots.join(', ')}"><span class="hint">24-hour times, comma separated, e.g. 10:00, 12:00, 15:00, 17:00</span></div>
+    <label class="field full"><span>Visit start times offered to clients</span><input name="visit_slots" value="${st.visit_slots.join(', ')}"><span class="hint">24-hour times, comma separated, e.g. 10:00, 12:00, 15:00, 17:00</span></label>
     <label class="field"><span>Visit length (min)</span><input type="number" name="visit_duration_min" value="${st.visit_duration_min}"></label><label class="field"><span>Travel buffer between visits (min)</span><input type="number" name="visit_buffer_min" value="${st.visit_buffer_min}"></label>
     <label class="field"><span>Days ahead offered</span><input type="number" name="slot_days_ahead" value="${st.slot_days_ahead}"></label><label class="field"><span>Earliest slot from now (min)</span><input type="number" name="min_lead_time_min" value="${st.min_lead_time_min}"></label>
     <label class="field"><span>Architect must reply within (min)</span><input type="number" name="offer_timeout_min" value="${st.offer_timeout_min}"></label><label class="field"><span>Client must confirm within (min)</span><input type="number" name="client_confirm_timeout_min" value="${st.client_confirm_timeout_min}"></label>
@@ -69,7 +69,7 @@ function faqs(d) {
 }
 
 function holidays(d) {
-  return html`<form class="card row" id="holform"><input type="date" name="day" required style="max-width:200px"><input name="name" placeholder="e.g. Diwali" style="max-width:260px"><button class="btn primary">Add holiday</button></form>
+  return html`<form class="card row" id="holform"><input type="date" name="day" required aria-label="Holiday date" style="max-width:200px"><input name="name" aria-label="Holiday name" placeholder="e.g. Diwali" style="max-width:260px"><button class="btn primary">Add holiday</button></form>
     <div class="card flush" style="margin-top:12px">${d.holidays.length ? html`<table class="t"><tbody>${d.holidays.map((h) => html`<tr><td>${h.day}</td><td>${h.name}</td><td class="r"><button class="btn small ghost" data-delhol="${h.day}">Remove</button></td></tr>`)}</tbody></table>` : empty('No holidays added', 'No visits are offered and attendance is not expected on holidays.')}</div>`;
 }
 

@@ -29,7 +29,7 @@ async function chatHtml() {
   const human = conv.mode === 'human';
   return html`<div style="display:flex;flex-direction:column;height:100%">
     <div class="row between" style="padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface)">
-      <div><div style="font-weight:700">${c.name || c.profile_name || phone(c.wa_id)} <span class="muted small">${phone(c.wa_id)}</span></div>
+      <div><a class="link back-link small" href="#/inbox">‹ All chats</a><div style="font-weight:700">${c.name || c.profile_name || phone(c.wa_id)} <span class="muted small">${phone(c.wa_id)}</span></div>
         <div class="row small" style="gap:6px;margin-top:3px">${badge(conv.mode || 'bot')}${c.opted_out ? html`<span class="badge bad">opted out</span>` : ''}<span class="badge ${d.windowOpen ? 'good' : 'muted'}" title="Free-form replies are possible for 24 h after the client's last message">${d.windowOpen ? '24 h window open' : 'window closed — templates only'}</span>
         <span class="tag">${c.language === 'hi' ? 'हिंदी' : 'English'}</span>${conv.owner ? html`<span class="tag">owner: ${conv.owner.name}</span>` : ''}${conv.attention_reason ? html`<span class="tag">⚠ ${conv.attention_reason}</span>` : ''}</div></div>
       <div class="row">${human ? html`<button class="btn small" data-act="release">Give back to bot</button>` : html`<button class="btn small" data-act="takeover">Take over</button>`}
@@ -37,9 +37,9 @@ async function chatHtml() {
     </div>
     <div class="chat" id="chat" style="flex:1">${d.messages.length ? d.messages.map(renderBubble) : html`<div class="day-sep">No messages yet</div>`}</div>
     <div style="padding:10px;border-top:1px solid var(--line);background:var(--surface)">
-      ${d.windowOpen ? html`<form id="reply" class="row" style="align-items:flex-end"><textarea name="text" rows="2" placeholder="Type a reply… (sending takes over the chat from the bot)" style="flex:1"></textarea><button class="btn primary">Send</button></form>`
+      ${d.windowOpen ? html`<form id="reply" class="row" style="align-items:flex-end;flex-wrap:nowrap"><textarea name="text" rows="2" aria-label="Reply to the client" placeholder="Type a reply… (sending takes over the chat from the bot)" style="flex:1"></textarea><button class="btn primary">Send</button></form>`
         : html`<form id="tpl" class="stack"><div class="notice small">The client has not messaged in the last 24 hours, so WhatsApp only allows an approved template.</div>
-          <div class="row"><select name="name" style="max-width:260px">${options([...new Set(d.templates.map((t) => t.name))], 'ns_client_update')}</select><input name="p1" placeholder="Parameter 1" style="flex:1"><input name="p2" placeholder="Parameter 2" style="flex:1"><button class="btn primary">Send template</button></div></form>`}
+          <div class="row"><select name="name" aria-label="Template" style="max-width:260px">${options([...new Set(d.templates.map((t) => t.name))], 'ns_client_update')}</select><input name="p1" aria-label="First value in the template" placeholder="Value 1" style="flex:1;min-width:110px"><input name="p2" aria-label="Second value in the template" placeholder="Value 2" style="flex:1;min-width:110px"><button class="btn primary">Send template</button></div></form>`}
       <div class="row small muted" style="margin-top:6px">${d.leads.map((l) => html`<a class="link" href="#/leads/${l.id}">${l.ref} (${label(l.status)})</a>`)}${d.projects.map((p) => html`<a class="link" href="#/projects/${p.id}">${p.ref}</a>`)}${d.tickets.map((t) => html`<span>${t.ref}: ${label(t.status)}</span>`)}</div>
     </div></div>`;
 }
@@ -59,12 +59,12 @@ export default {
   async render({ params, query }) {
     state.contactId = params[0] ? Number(params[0]) : null;
     if (query.filter) state.filter = query.filter;
-    return html`<div class="split" style="margin:-20px -22px -60px">
-      <div class="pane"><div style="padding:10px;border-bottom:1px solid var(--line)" class="stack">
-        <div class="row"><input class="search" id="q" placeholder="Search name or number" value="${state.q}" style="max-width:none;flex:1"><button class="btn small" id="newchat" title="Start a chat">＋</button></div>
+    return html`<div class="split inbox bleed ${state.contactId ? 'has-chat' : ''}">
+      <div class="pane list"><div style="padding:10px;border-bottom:1px solid var(--line)" class="stack">
+        <div class="row"><input class="search" id="q" type="search" aria-label="Search chats by name or number" placeholder="Search name or number" value="${state.q}" style="max-width:none;flex:1"><button class="btn small" id="newchat" type="button" title="Start a chat" aria-label="Start a chat">＋</button></div>
         <div class="chips">${[['all', 'All'], ['attention', 'Needs person'], ['human', 'Human mode'], ['unread', 'Unread'], ['mine', 'Mine']].map(([k, l]) => html`<span class="chip ${state.filter === k ? 'on' : ''}" data-filter="${k}">${l}</span>`)}</div></div>
         <div id="convs">${raw(String(await listHtml()))}</div></div>
-      <div class="pane" id="chatpane" style="background:var(--chat-bg)">${raw(String(await chatHtml()))}</div></div>`;
+      <div class="pane chat-pane" id="chatpane" style="background:var(--chat-bg)">${raw(String(await chatHtml()))}</div></div>`;
   },
   mount(root) {
     rootRef = root;

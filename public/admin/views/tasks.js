@@ -9,11 +9,11 @@ async function tasks(query) {
   const ppl = await team();
   const now = Date.now();
   return html`<div class="row between" style="margin-bottom:10px"><div class="chips">${[['open', 'Open'], ['done', 'Done'], ['all', 'All']].map(([k, l]) => html`<a class="chip ${st === k ? 'on' : ''}" href="#/tasks?status=${k}${query.assignee ? `&assignee=${query.assignee}` : ''}">${l}</a>`)}
-      <select id="who" style="width:auto">${options(ppl.map((u) => ({ value: u.id, label: u.name })), query.assignee || '', { blank: 'Everyone' })}</select></div><button class="btn primary" data-act="new">＋ New task</button></div>
+      <select id="who" aria-label="Show tasks of" style="width:auto">${options(ppl.map((u) => ({ value: u.id, label: u.name })), query.assignee || '', { blank: 'Everyone' })}</select></div><button class="btn primary" data-act="new">＋ New task</button></div>
     <div class="card flush"><div class="table-wrap">${rows.length ? html`<table class="t"><thead><tr><th>Task</th><th>Assignee</th><th>Priority</th><th>Due</th><th>Status</th></tr></thead><tbody>
       ${rows.map((t) => html`<tr><td><b>${t.title}</b>${t.description ? html`<div class="muted small pre">${t.description.slice(0, 240)}</div>` : ''}${t.evidence ? html`<div class="small ink2 pre">${t.evidence.split('\n').slice(-2).join('\n')}</div>` : ''}<div class="muted small">${label(t.kind)} · ${t.created_by}${t.entity_type ? ` · ${t.entity_type} #${t.entity_id}` : ''}</div></td>
         <td class="nowrap">${t.assignee || '—'}</td><td>${badge(t.priority)}</td><td class="nowrap ${t.due_at && new Date(t.due_at).getTime() < now && !['done', 'cancelled'].includes(t.status) ? '' : 'muted'}">${t.due_at ? html`${dt(t.due_at)}${new Date(t.due_at).getTime() < now && !['done', 'cancelled'].includes(t.status) ? html` <span class="badge bad">overdue</span>` : ''}` : '—'}</td>
-        <td><select data-status="${t.id}" style="width:auto">${options(['todo', 'in_progress', 'blocked', 'done', 'cancelled'], t.status)}</select></td></tr>`)}
+        <td><select data-status="${t.id}" aria-label="Status of ${t.title}" style="width:auto">${options([{ value: 'todo', label: 'To do' }, { value: 'in_progress', label: 'In progress' }, { value: 'blocked', label: 'Blocked' }, { value: 'done', label: 'Done' }, { value: 'cancelled', label: 'Cancelled' }], t.status)}</select></td></tr>`)}
     </tbody></table>` : empty('No tasks here')}</div></div>`;
 }
 

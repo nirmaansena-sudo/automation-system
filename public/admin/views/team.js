@@ -44,7 +44,7 @@ async function requests() {
 
 async function payroll(month) {
   const d = await api.get(`/api/payroll?month=${month}`);
-  return html`<div class="row between" style="margin-bottom:10px"><div class="row"><b>Month</b><input type="month" id="pm" value="${d.month}" style="max-width:180px"></div><a class="btn primary" href="/api/payroll/export.csv?month=${d.month}">Download CSV</a></div>
+  return html`<div class="row between" style="margin-bottom:10px"><label class="row"><b>Month</b><input type="month" id="pm" value="${d.month}" style="max-width:180px"></label><a class="btn primary" href="/api/payroll/export.csv?month=${d.month}">Download CSV</a></div>
     <div class="card flush"><div class="table-wrap"><table class="t"><thead><tr><th>Name</th><th>Role</th><th class="r">Present</th><th class="r">Late</th><th class="r">Half day</th><th class="r">Absent</th><th class="r">Leave</th><th class="r">To review</th><th class="r">Hours</th><th class="r">Expenses</th></tr></thead><tbody>
     ${d.rows.map((r) => html`<tr><td>${r.name}</td><td>${label(r.role)}</td><td class="r num">${r.present}</td><td class="r num">${r.late}</td><td class="r num">${r.half_day}</td><td class="r num">${r.absent}</td><td class="r num">${r.leave}</td><td class="r num">${r.needs_review ? html`<b>${r.needs_review}</b>` : 0}</td><td class="r num">${r.hours}</td><td class="r num">${inr(r.expenses)}</td></tr>`)}</tbody></table></div></div>
     <p class="muted small" style="margin-top:8px">On the 1st of each month a payroll approval is created automatically. Resolve "to review" days before exporting.</p>`;

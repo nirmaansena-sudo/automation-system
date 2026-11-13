@@ -13,7 +13,7 @@ async function table(name, query) {
   const pages = Math.max(1, Math.ceil(d.total / d.size));
   const cell = (v) => { if (v === null || v === undefined) return html`<span class="muted">—</span>`; const s = String(v); return s.length > 80 ? html`<span data-tip="${s.slice(0, 600)}">${s.slice(0, 80)}…</span>` : s; };
   return html`<div class="row between" style="margin-bottom:10px"><div class="row"><a class="btn small" href="#/data">‹ All tables</a><b>${FRIENDLY[name] || name}</b><span class="muted">${d.total.toLocaleString('en-IN')} rows</span></div>
-    <div class="row"><input class="search" id="tq" placeholder="Search" value="${query.q || ''}"><a class="btn" href="/api/data/tables/${name}/export.csv">Export CSV</a></div></div>
+    <div class="row"><input class="search" type="search" aria-label="Search" id="tq" placeholder="Search" value="${query.q || ''}"><a class="btn" href="/api/data/tables/${name}/export.csv">Export CSV</a></div></div>
     <div class="card flush"><div class="table-wrap" style="max-height:70vh">${d.rows.length ? html`<table class="t dense small"><thead><tr>${d.columns.map((c) => html`<th>${c}</th>`)}</tr></thead><tbody>${d.rows.map((r) => html`<tr>${d.columns.map((c) => html`<td class="nowrap">${cell(r[c])}</td>`)}</tr>`)}</tbody></table>` : empty('No rows')}</div></div>
     <div class="row" style="margin-top:10px">${page > 0 ? html`<a class="btn small" href="#/data/${name}?page=${page - 1}&q=${query.q || ''}">‹ Previous</a>` : ''}<span class="muted">Page ${page + 1} of ${pages}</span>${page + 1 < pages ? html`<a class="btn small" href="#/data/${name}?page=${page + 1}&q=${query.q || ''}">Next ›</a>` : ''}</div>
     <p class="muted small" style="margin-top:8px">Read-only view. Records change through the dashboard and WhatsApp flows so every change is validated and written to the audit history.</p>`;
@@ -21,7 +21,7 @@ async function table(name, query) {
 
 async function audit(query) {
   const rows = await api.get(`/api/data/audit?q=${encodeURIComponent(query.q || '')}`);
-  return html`<div class="row" style="margin-bottom:10px"><input class="search" id="aq" placeholder="Search action, person, entity" value="${query.q || ''}"></div>
+  return html`<div class="row" style="margin-bottom:10px"><input class="search" type="search" aria-label="Search action, person, entity" id="aq" placeholder="Search action, person, entity" value="${query.q || ''}"></div>
     <div class="card flush"><div class="table-wrap"><table class="t dense small"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th><th>Details</th></tr></thead><tbody>${rows.map((a) => html`<tr><td class="nowrap">${dt(a.at)}</td><td>${a.actor}</td><td>${a.action}</td><td>${a.entity_type || ''} ${a.entity_id || ''}</td><td class="muted">${a.data ? JSON.stringify(a.data).slice(0, 160) : ''}</td></tr>`)}</tbody></table></div></div>`;
 }
 

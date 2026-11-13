@@ -8,7 +8,7 @@ export default {
     const byDay = {};
     for (const v of d.visits) { const k = day(v.start_at); (byDay[k] ||= []).push(v); }
     return html`<div class="page-head"><div><h1>Site visits</h1><div class="sub">Confirmed visits for the next two weeks, offers waiting for an architect or client, and who is on leave.</div></div></div>
-      <div class="grid g2" style="grid-template-columns:minmax(0,2fr) minmax(0,1fr)">
+      <div class="grid g21">
         <section class="card"><header><h2>Agenda</h2></header>
           ${Object.keys(byDay).length ? Object.entries(byDay).map(([k, list]) => html`<div class="agenda-day">${k}</div>${list.map((v) => html`<div class="slot-card">
             <div><b class="num">${time(v.start_at)}</b><div class="muted small">${v.ref}</div></div>

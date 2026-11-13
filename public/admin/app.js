@@ -1,5 +1,5 @@
 // Manager dashboard — shell, auth screens, router and live updates.
-import { html, raw, api, $, on, toast, modal, formData, installTooltips, subscribe, ago, esc } from '/shared/ui.js';
+import { html, raw, api, $, on, toast, modal, formData, installTooltips, subscribe, ago, esc, label, watchTables, installDoubleTapGuard, isOnline } from '/shared/ui.js';
 
 const NAV = [
   ['Run the business', [
@@ -11,15 +11,15 @@ const NAV = [
   ['Management', [['reports', '↧', 'Reports & exports'], ['costs', '₹', 'Usage & costs'], ['settings', '⚙', 'Settings'], ['security', '🔒', 'My security'], ['data', '🗄', 'Database & backups']]],
 ];
 const VIEWS = {
-  overview: () => import('./views/overview.js'), inbox: () => import('./views/inbox.js'), approvals: () => import('./views/approvals.js'),
-  leads: () => import('./views/leads.js'), visits: () => import('./views/visits.js'), projects: () => import('./views/projects.js'),
-  clients: () => import('./views/clients.js'), team: () => import('./views/team.js'), tasks: () => import('./views/tasks.js'),
-  contacts: () => import('./views/clients.js'), attendance: () => import('./views/attendance.js'), reports: () => import('./views/reports.js'), automation: () => import('./views/automation.js'),
-  messages: () => import('./views/messages.js'), data: () => import('./views/data.js'), settings: () => import('./views/settings.js'),
-  simulator: () => import('./views/simulator.js'),
-  travel: () => import('./views/travel.js'), operations: () => import('./views/operations.js'),
-  costs: () => import('./views/costs.js'),
-  security: () => import('./views/security.js'),
+  overview: (v = '') => import(`./views/overview.js${v}`), inbox: (v = '') => import(`./views/inbox.js${v}`), approvals: (v = '') => import(`./views/approvals.js${v}`),
+  leads: (v = '') => import(`./views/leads.js${v}`), visits: (v = '') => import(`./views/visits.js${v}`), projects: (v = '') => import(`./views/projects.js${v}`),
+  clients: (v = '') => import(`./views/clients.js${v}`), team: (v = '') => import(`./views/team.js${v}`), tasks: (v = '') => import(`./views/tasks.js${v}`),
+  contacts: (v = '') => import(`./views/clients.js${v}`), attendance: (v = '') => import(`./views/attendance.js${v}`), reports: (v = '') => import(`./views/reports.js${v}`), automation: (v = '') => import(`./views/automation.js${v}`),
+  messages: (v = '') => import(`./views/messages.js${v}`), data: (v = '') => import(`./views/data.js${v}`), settings: (v = '') => import(`./views/settings.js${v}`),
+  simulator: (v = '') => import(`./views/simulator.js${v}`),
+  travel: (v = '') => import(`./views/travel.js${v}`), operations: (v = '') => import(`./views/operations.js${v}`),
+  costs: (v = '') => import(`./views/costs.js${v}`),
+  security: (v = '') => import(`./views/security.js${v}`),
 };
 
 const app = { user: null, provider: 'simulator', view: null, route: null, counts: {}, pendingRefresh: false };
@@ -81,27 +81,36 @@ function renderLogin(msg = '') {
 // ---------------------------------------------------------------- shell
 function renderShell() {
   const u = app.user;
-  $('#root').innerHTML = String(html`<div class="shell">
-    <aside class="side" id="side">
+  $('#root').innerHTML = String(html`<a class="skip" href="#content">Skip to content</a><div class="backdrop" id="backdrop"></div><div class="shell">
+    <aside class="side" id="side" aria-label="Main menu">
       <div class="brand"><div class="mark">NS</div><div><b>Nirmaan Sena</b><span>Automation system</span></div></div>
       ${NAV.map(([group, items]) => html`<div class="nav-group">${group}</div><nav class="nav">${items.filter(([id]) => !(id === 'simulator' && app.provider !== 'simulator') && !(u.role === 'finance' && ['inbox', 'simulator', 'data', 'messages', 'contacts', 'automation', 'attendance', 'reports'].includes(id))).map(([id, ico, text, count]) => html`<a href="#/${id}" data-nav="${id}"><span class="ico" aria-hidden="true">${ico}</span>${text}${count ? html`<span class="count hide" data-count="${count}"></span>` : ''}</a>`)}</nav>`)}
-      <div class="foot">${u.name} · ${u.role}<br><a class="link" href="#" id="logout">Log out</a> · <a class="link" href="#" id="theme">Theme</a></div>
+      <div class="foot"><div class="who" title="${u.email || ''}">${u.name} · ${label(u.role)}</div><div class="row"><button class="btn small" id="theme" type="button" title="Switch between light, dark and automatic">◐ Theme</button><button class="btn small" id="logout" type="button">Log out</button></div></div>
     </aside>
     <div class="main">
-      <div class="top"><button class="icon-btn menu-btn" id="menu" aria-label="Menu">☰</button><div class="title" id="title"></div><div class="grow"></div>
+      <div class="netbar" role="alert"><span>⚠ Cannot reach the system. Trying again…</span><button class="btn small" id="retry-net" type="button">Try now</button></div>
+      <div class="top"><button class="icon-btn menu-btn" id="menu" aria-label="Open menu" aria-controls="side" aria-expanded="false">☰</button><div class="title" id="title"></div><div class="grow"></div>
         ${app.provider === 'simulator' ? html`<a class="badge warn" href="#/simulator" title="WhatsApp is in simulator mode — nothing reaches real phones">Simulator mode</a>` : html`<span class="badge good">WhatsApp live</span>`}
         <button class="icon-btn" id="bell" aria-label="Notifications">🔔<span class="dot hide" id="bell-dot"></span></button></div>
-      <div class="content" id="content"></div>
+      <main class="content" id="content" tabindex="-1">${raw(skeleton())}</main>
     </div>
   </div>`);
-  $('#menu').addEventListener('click', () => document.body.classList.toggle('nav-open'));
-  $('#side').addEventListener('click', (e) => { if (e.target.closest('a[data-nav]')) document.body.classList.remove('nav-open'); });
-  $('#logout').addEventListener('click', async (e) => { e.preventDefault(); await api.post('/api/auth/logout'); location.reload(); });
-  $('#theme').addEventListener('click', (e) => { e.preventDefault(); cycleTheme(); });
+  const setMenu = (open) => { document.body.classList.toggle('nav-open', open); $('#menu').setAttribute('aria-expanded', String(open)); };
+  app.closeMenu = () => setMenu(false);
+  $('#menu').addEventListener('click', () => setMenu(!document.body.classList.contains('nav-open')));
+  $('#backdrop').addEventListener('click', () => setMenu(false));
+  $('#side').addEventListener('click', (e) => { if (e.target.closest('a[data-nav]')) setMenu(false); });
+  $('#logout').addEventListener('click', async () => { try { await api.post('/api/auth/logout'); } catch { /* signed out locally anyway */ } location.reload(); });
+  $('#theme').addEventListener('click', () => cycleTheme());
+  $('#retry-net').addEventListener('click', () => checkConnection(true));
+  watchTables($('#content'));
   $('#bell').addEventListener('click', openNotifications);
   const note = sessionStorageSafe('ns_demo_note');
   if (note) { try { sessionStorage.removeItem('ns_demo_note'); } catch { /* ignore */ } const d = JSON.parse(note); setTimeout(() => modal({ title: 'Demo data loaded', submit: 'Got it', cancel: null, body: html`<p>Sample architects, supervisors, clients, a running project and a pending approval were created.</p><ul><li>Manager login: <code>priya@demo.local</code> / <code>demo1234</code></li><li>Finance login: <code>neha@demo.local</code> / <code>demo1234</code></li><li>Employee app PIN for every demo staff member: <code>${d.pin}</code> (e.g. Rahul Mehta, phone 9800000101)</li></ul><p class="muted">Start with <b>WhatsApp simulator</b>: chat as a new client and watch the lead, approval, architect offer and visit happen. Delete demo users before going live.</p>`, onSubmit: () => true }), 300); }
 }
+/** Grey placeholders while the first page loads. */
+function skeleton() { return '<div class="skeleton" style="height:28px;width:220px;margin-bottom:18px"></div><div class="grid g3"><div class="skeleton" style="height:92px"></div><div class="skeleton" style="height:92px"></div><div class="skeleton" style="height:92px"></div></div><div class="skeleton" style="height:240px;margin-top:14px"></div>'; }
+
 function cycleTheme() {
   const cur = document.documentElement.dataset.theme || 'auto';
   const next = cur === 'auto' ? 'dark' : cur === 'dark' ? 'light' : 'auto';
@@ -132,16 +141,29 @@ function setCount(key, n) { const el = document.querySelector(`[data-count="${ke
 
 // ---------------------------------------------------------------- router
 let renderSeq = 0;
-async function render() {
+// A page's own code is fetched the first time it is opened. If that fetch fails (the
+// connection dropped, or the system is restarting) say so plainly, raise the "cannot
+// reach" banner and let the automatic re-check bring the page back.
+let viewRetry = 0;
+async function loadView(loader) {
+  try { return (await loader()).default; } catch { /* try once more below */ }
+  viewRetry += 1;
+  try { return (await loader(`?retry=${viewRetry}`)).default; } catch { /* find out why */ }
+  await api.get('/api/me'); // throws "cannot reach the system" (and shows the banner) when that is the reason
+  throw new Error('This page could not be opened. Refresh the browser and try again.');
+}
+
+async function render(navigated = false) {
   const route = parseRoute();
   app.route = route;
-  document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === route.name));
+  document.querySelectorAll('[data-nav]').forEach((a) => { const on = a.dataset.nav === route.name; a.classList.toggle('active', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   const loader = VIEWS[route.name];
   const content = $('#content');
-  if (!loader) { content.innerHTML = '<div class="empty"><div class="empty-title">Page not found</div></div>'; return; }
+  if (!content) return;
+  if (!loader) { content.innerHTML = '<div class="empty"><div class="empty-title">Page not found</div><div class="muted">This address does not exist. <a class="link" href="#/overview">Go to the overview</a></div></div>'; return; }
   const seq = ++renderSeq;
   try {
-    const mod = (await loader()).default;
+    const mod = await loadView(loader);
     app.view = mod;
     const ctx = { ...route, user: app.user, app };
     const out = await mod.render(ctx);
@@ -152,12 +174,28 @@ async function render() {
     el.innerHTML = String(out);
     content.replaceChildren(el);
     if (mod.mount) mod.mount(el, ctx);
+    // After a click on a menu or link, start at the top of the new page (also for keyboard and screen-reader users).
+    if (navigated) { window.scrollTo(0, 0); content.focus({ preventScroll: true }); }
   } catch (e) {
+    if (seq !== renderSeq) return;
     if (e.status === 401) return renderLogin('Your session ended. Please log in again.');
-    content.innerHTML = String(html`<div class="notice bad"><b>Could not load this page.</b> ${e.message}</div>`);
+    if (e.offline && content.children.length && !navigated) return; // keep what is on screen; the banner explains
+    content.innerHTML = String(html`<div class="notice bad" role="alert"><b>Could not load this page.</b> ${e.message}<div style="margin-top:10px"><button class="btn small" id="retry-page" type="button">Try again</button></div></div>`);
+    $('#retry-page')?.addEventListener('click', () => render(true));
   }
 }
 app.refresh = () => render();
+
+// ---------------------------------------------------------------- connection lost / back
+let netTimer = null;
+async function checkConnection(manual = false) {
+  try { const r = await fetch('/health', { cache: 'no-store' }); if (!r.ok) throw new Error('down'); await api.get('/api/me'); }
+  catch (e) { if (e.status === 401) return renderLogin('Your session ended. Please log in again.'); if (manual) toast('Still cannot reach the system.', 'err'); }
+}
+window.addEventListener('ns:offline', () => { clearInterval(netTimer); netTimer = setInterval(checkConnection, 5000); });
+window.addEventListener('ns:online', () => { clearInterval(netTimer); netTimer = null; if (app.user && $('#content')) { toast('Connected again'); render(); refreshCounts(); } });
+window.addEventListener('online', () => { if (!isOnline()) checkConnection(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('nav-open') && !document.querySelector('dialog[open]')) app.closeMenu?.(); });
 
 function liveUpdate(topics) {
   const v = app.view;
@@ -173,6 +211,7 @@ document.addEventListener('focusout', () => { if (app.pendingRefresh) setTimeout
 
 async function boot() {
   installTooltips();
+  installDoubleTapGuard();
   try {
     const st = await api.get('/api/setup/status');
     if (st.needsSetup) return renderSetup(st);
@@ -184,7 +223,7 @@ async function boot() {
     refreshCounts();
     if (!app.booted) {
       app.booted = true;
-      window.addEventListener('hashchange', render);
+      window.addEventListener('hashchange', () => { app.closeMenu?.(); render(true); });
       setInterval(refreshCounts, 60000);
       subscribe(liveUpdate);
     }

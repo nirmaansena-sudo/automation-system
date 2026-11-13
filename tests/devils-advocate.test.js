@@ -466,3 +466,32 @@ test('message handling that hangs is abandoned so new messages keep flowing', as
     assert.match(JSON.stringify(overview.body.health.warnings), /got stuck and was restarted automatically/);
   } finally { providers.setProviderForTests(null); }
 });
+
+// ---------------------------------------------------------------- screens
+test('screens: the phone card-table class is not also a general layout class', () => {
+  // A table once took the class "stack", which the stylesheet already used for a
+  // column layout: every table on a desktop screen lost its column alignment.
+  const css = fs.readFileSync(path.join(ROOT, 'public/shared/style.css'), 'utf8');
+  const ui = fs.readFileSync(path.join(ROOT, 'public/shared/ui.js'), 'utf8');
+  const cls = /table\.classList\.add\('([a-z-]+)'\)/.exec(ui)?.[1];
+  assert.ok(cls, 'ui.js marks card tables with a class');
+  assert.ok(css.includes(`table.t.${cls} `), 'the stylesheet styles that class on tables');
+  const withoutTableRules = css.replaceAll(`table.t.${cls}`, '');
+  assert.ok(!new RegExp(`\\.${cls}(?![\\w-])`).test(withoutTableRules), `".${cls}" must only ever style tables`);
+});
+
+test('screens: phone layout rules come after the rules they change', () => {
+  // The phone rule for page headings once sat above the general rule and lost to it.
+  const css = fs.readFileSync(path.join(ROOT, 'public/shared/style.css'), 'utf8');
+  const general = css.indexOf('\n.page-head {');
+  const phone = css.indexOf('.page-head { align-items: stretch; flex-direction: column; }');
+  assert.ok(general > 0 && phone > general, 'the phone heading rule follows the general one');
+});
+
+test('team app: a slow GPS or a closed camera can never lose a check-in', () => {
+  const app = fs.readFileSync(path.join(ROOT, 'public/app/app.js'), 'utf8');
+  const punch = app.slice(app.indexOf('async function punch('), app.indexOf('// ----', app.indexOf('async function punch(')));
+  assert.ok(punch.indexOf('pickSelfie()') < punch.indexOf('await locate()'), 'the camera opens straight from the tap, before the wait for GPS');
+  assert.match(app, /addEventListener\('cancel'/, 'closing the camera continues without a photo');
+  assert.match(app, /'#punch, #punchout', \(e, el\) => withBusy\(/, 'a second tap while working is ignored');
+});

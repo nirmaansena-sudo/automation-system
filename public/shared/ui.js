@@ -20,13 +20,41 @@ export function html(strings, ...vals) {
 // ---------------------------------------------------------------- API
 let authToken = null;
 export function setToken(t) { authToken = t; }
+
+// A thin bar at the top of the screen while a request takes longer than a blink.
+let inflight = 0; let busyTimer = null;
+function busy(delta) {
+  inflight = Math.max(0, inflight + delta);
+  let bar = document.getElementById('busybar');
+  if (inflight > 0) {
+    if (!busyTimer && !bar?.classList.contains('on')) busyTimer = setTimeout(() => {
+      busyTimer = null;
+      if (!inflight) return;
+      if (!bar) { bar = document.createElement('div'); bar.id = 'busybar'; bar.setAttribute('aria-hidden', 'true'); document.body.appendChild(bar); }
+      bar.classList.add('on');
+    }, 250);
+  } else { clearTimeout(busyTimer); busyTimer = null; bar?.classList.remove('on'); }
+}
+// Connection state: the page says so when the system cannot be reached and recovers by itself.
+let online = true;
+function setOnline(v) {
+  if (online === v) return;
+  online = v;
+  document.body.classList.toggle('offline', !v);
+  window.dispatchEvent(new CustomEvent(v ? 'ns:online' : 'ns:offline'));
+}
+export const isOnline = () => online;
+
 export async function api(method, path, body) {
   const headers = { 'x-ns': '1' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
   let res;
+  busy(1);
   try { res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, credentials: 'same-origin' }); }
-  catch { const e = new Error('Cannot reach the server. Is it running?'); e.offline = true; throw e; }
+  catch { setOnline(false); const e = new Error('Cannot reach the system. Check that it is running and that you are connected.'); e.offline = true; throw e; }
+  finally { busy(-1); }
+  setOnline(true);
   let data = null;
   const text = await res.text();
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -101,9 +129,13 @@ export function toast(msg, kind = 'ok') {
   if (!box) { box = document.createElement('div'); box.id = 'toasts'; box.setAttribute('role', 'status'); box.setAttribute('aria-live', 'polite'); document.body.appendChild(box); }
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
+  if (kind === 'err') el.setAttribute('role', 'alert');
   el.textContent = msg;
   box.appendChild(el);
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, kind === 'err' ? 6000 : 3200);
+  const close = () => { el.classList.add('out'); setTimeout(() => el.remove(), 300); };
+  el.addEventListener('click', close);
+  // Longer messages stay longer: people read about 15 characters a second.
+  setTimeout(close, Math.max(kind === 'err' ? 6000 : 3200, Math.min(12000, String(msg).length * 70)));
 }
 
 /** Modal with a form. onSubmit(data) may return false/throw to keep it open. */
@@ -111,15 +143,18 @@ export function modal({ title, body, submit = 'Save', cancel = 'Cancel', danger 
   return new Promise((resolve) => {
     const dlg = document.createElement('dialog');
     dlg.className = `modal${wide ? ' wide' : ''}`;
+    const opener = document.activeElement;
+    const titleId = `dlg-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    dlg.setAttribute('aria-labelledby', titleId);
     dlg.innerHTML = String(html`<form method="dialog" class="modal-form">
-      <header><h2>${title}</h2><button type="button" class="icon-btn" data-close aria-label="Close">✕</button></header>
+      <header><h2 id="${titleId}">${title}</h2><button type="button" class="icon-btn" data-close aria-label="Close">✕</button></header>
       <div class="modal-body">${raw(String(body || ''))}</div>
       <div class="form-error" role="alert"></div>
       <footer>${cancel ? html`<button type="button" class="btn ghost" data-close>${cancel}</button>` : ''}${submit ? html`<button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${submit}</button>` : ''}</footer>
     </form>`);
     document.body.appendChild(dlg);
     const form = dlg.querySelector('form');
-    const close = (v) => { dlg.close(); dlg.remove(); resolve(v); };
+    const close = (v) => { dlg.close(); dlg.remove(); if (opener?.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true }); resolve(v); };
     dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(null); });
     $$('[data-close]', dlg).forEach((b) => b.addEventListener('click', () => close(null)));
     form.addEventListener('submit', async (e) => {
@@ -127,13 +162,14 @@ export function modal({ title, body, submit = 'Save', cancel = 'Cancel', danger 
       const btn = form.querySelector('button[type=submit]');
       const errBox = form.querySelector('.form-error');
       errBox.textContent = '';
-      if (btn) btn.disabled = true;
+      if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+      const ready = () => { if (btn) { btn.disabled = false; btn.classList.remove('busy'); } };
       try {
         const data = formData(form);
         const r = onSubmit ? await onSubmit(data, form) : data;
-        if (r === false) { if (btn) btn.disabled = false; return; }
+        if (r === false) { ready(); return; }
         close(r === undefined ? data : r);
-      } catch (err) { errBox.textContent = err.message; if (btn) btn.disabled = false; }
+      } catch (err) { errBox.textContent = err.message; ready(); errBox.scrollIntoView({ block: 'nearest' }); }
     });
     dlg.showModal();
     if (onMount) onMount(dlg);
@@ -142,6 +178,63 @@ export function modal({ title, body, submit = 'Save', cancel = 'Cancel', danger 
   });
 }
 export const confirmBox = (title, message, { submit = 'Confirm', danger = false } = {}) => modal({ title, body: html`<p>${message}</p>`, submit, danger, onSubmit: () => true });
+
+/** Run an action from a button: the button shows progress and cannot be pressed twice. */
+export async function withBusy(btn, fn) {
+  if (!btn || btn.disabled) return undefined;
+  btn.disabled = true; btn.classList.add('busy');
+  try { return await fn(); }
+  finally { if (btn.isConnected) { btn.disabled = false; btn.classList.remove('busy'); } }
+}
+
+/**
+ * On a phone a wide table hides its right-hand columns (often the action buttons).
+ * Each cell is given its column heading as a label, and the stylesheet lays every row
+ * out as a card below 700 px. Tables inside dialogs or marked class="keep" stay tables.
+ */
+export function enhanceTables(root = document) {
+  for (const table of root.querySelectorAll('table')) {
+    const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    if (!heads.length) continue;
+    // Boxes and menus inside a table take their name from the column heading (screen readers).
+    for (const el of table.querySelectorAll('tbody input:not([type=hidden]), tbody select, tbody textarea')) {
+      if (el.getAttribute('aria-label') || el.closest('label') || (el.id && document.querySelector(`label[for="${el.id}"]`))) continue;
+      const td = el.closest('td'); const head = td ? heads[[...td.parentElement.children].indexOf(td)] : '';
+      if (head) el.setAttribute('aria-label', head);
+    }
+    if (!table.matches('table.t:not(.keep)') || table.closest('dialog')) continue;
+    for (const tr of table.querySelectorAll('tbody tr')) {
+      [...tr.children].forEach((td, i) => {
+        if (td.colSpan > 1 || td.classList.contains('lead-cell') || td.dataset.label) return;
+        if (i === 0) td.classList.add('lead-cell');
+        else if (heads[i]) td.dataset.label = heads[i];
+      });
+    }
+    table.classList.add('rowcards');
+  }
+}
+/** Keep labelling tables as views draw and redraw themselves. */
+export function watchTables(root) {
+  enhanceTables(root);
+  let queued = false;
+  const mo = new MutationObserver(() => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; enhanceTables(root); }); });
+  mo.observe(root, { childList: true, subtree: true });
+  return () => mo.disconnect();
+}
+
+/** A second tap on the same button within a third of a second is a slip, not a second order. */
+let guardInstalled = false;
+export function installDoubleTapGuard() {
+  if (guardInstalled) return; guardInstalled = true;
+  let last = null; let at = 0;
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest?.('button, a.btn');
+    if (!b) return;
+    const now = performance.now();
+    if (b === last && now - at < 330 && e.detail > 1) { e.preventDefault(); e.stopPropagation(); return; }
+    last = b; at = now;
+  }, true);
+}
 
 // ---------------------------------------------------------------- small widgets
 export function badge(status, map = {}) {

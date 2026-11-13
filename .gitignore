@@ -4,3 +4,4 @@ data/
 *.db-wal
 *.db-shm
 node_modules/
+ui-check-output/
