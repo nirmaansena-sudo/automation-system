@@ -75,9 +75,8 @@ month-end and year-end (`npm run test:times`).
   unclear answers the chat goes to a person.
 - **In Docker a settings error makes the app container restart in a loop.** `docker compose ps` shows
   *restarting*; `docker compose logs app` ends with the line to fix.
-- **`start-windows.bat` was changed but could not be run on Windows during this review.** The same
-  supervisor was tested on Linux (restart after a crash, clean stop, settings error). Start it once and
-  check that the usual "is running" lines appear.
+- **`start-windows.bat` now starts the system through the supervisor.** It was checked on the office PC on
+  13 November 2026: the usual "is running" lines appear and the dashboard opens.
 
 ## After upgrading to 1.3.0
 
